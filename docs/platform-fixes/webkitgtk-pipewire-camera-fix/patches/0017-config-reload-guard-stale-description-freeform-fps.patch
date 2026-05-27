@@ -1,0 +1,607 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0017] Fix config reload overwrite, stale description, and restrictive FPS selector
+
+Guard config initialization in configuration/page.tsx with if (!config) so navigating back does not overwrite in-memory changes.
+Remove stale description about preview FPS location in AdvancedFaceSettings.tsx.
+Replace 3-speed FPS Select with free-form NumberInput (1-120 FPS) in FaceCapture.tsx.
+
+diff --git a/app/src/app/configuration/-components/face/AdvancedFaceSettings.tsx b/app/src/app/configuration/-components/face/AdvancedFaceSettings.tsx
+index 0c2e8c7..a632a8e 100644
+--- a/app/src/app/configuration/-components/face/AdvancedFaceSettings.tsx
++++ b/app/src/app/configuration/-components/face/AdvancedFaceSettings.tsx
+@@ -1,5 +1,5 @@
+-import { useState } from "react";
+ import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
++import { useState } from "react";
+ import { Input } from "@/components/ui/input";
+ import { Label } from "@/components/ui/label";
+ import {
+@@ -15,11 +15,18 @@ import { DEFAULT_ADVANCED_CONFIG } from "@/types/config";
+ 
+ interface AdvancedFaceSettingsProps {
+   advanced: AdvancedConfig;
+-  onChange: <K extends keyof AdvancedConfig>(key: K, value: AdvancedConfig[K]) => void;
++  onChange: <K extends keyof AdvancedConfig>(
++    key: K,
++    value: AdvancedConfig[K],
++  ) => void;
+   alwaysOpen?: boolean;
+ }
+ 
+-export function AdvancedFaceSettings({ advanced, onChange, alwaysOpen }: AdvancedFaceSettingsProps) {
++export function AdvancedFaceSettings({
++  advanced,
++  onChange,
++  alwaysOpen,
++}: AdvancedFaceSettingsProps) {
+   const [open, setOpen] = useState(alwaysOpen ?? false);
+ 
+   const sections = (
+@@ -28,7 +35,11 @@ export function AdvancedFaceSettings({ advanced, onChange, alwaysOpen }: Advance
+         <button
+           type="button"
+           onClick={() => {
+-            (Object.keys(DEFAULT_ADVANCED_CONFIG) as Array<keyof AdvancedConfig>).forEach((key) => {
++            (
++              Object.keys(DEFAULT_ADVANCED_CONFIG) as Array<
++                keyof AdvancedConfig
++              >
++            ).forEach((key) => {
+               onChange(key, DEFAULT_ADVANCED_CONFIG[key]);
+             });
+           }}
+@@ -93,7 +104,11 @@ export function AdvancedFaceSettings({ advanced, onChange, alwaysOpen }: Advance
+         onClick={() => setOpen(!open)}
+         className="flex items-center gap-2 w-full text-left font-medium text-sm cursor-pointer"
+       >
+-        {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
++        {open ? (
++          <ChevronDown className="w-4 h-4" />
++        ) : (
++          <ChevronRight className="w-4 h-4" />
++        )}
+         Advanced Settings
+       </button>
+       {open && sections}
+@@ -112,9 +127,14 @@ function UnsharpMaskSection({
+ }) {
+   return (
+     <div className="space-y-3">
+-      <SectionHeading label="Unsharp Mask" onReset={() => onChange(defaultConfig)} />
++      <SectionHeading
++        label="Unsharp Mask"
++        onReset={() => onChange(defaultConfig)}
++      />
+       <p className="text-sm text-muted-foreground/60">
+-        Sharpens face crops before AI anti-spoofing to restore texture detail lost to webcam compression. Disable if using a model trained on soft images.
++        Sharpens face crops before AI anti-spoofing to restore texture detail
++        lost to webcam compression. Disable if using a model trained on soft
++        images.
+       </p>
+       <div className="flex items-center gap-3">
+         <label className="flex items-center gap-2 text-sm cursor-pointer">
+@@ -131,7 +151,9 @@ function UnsharpMaskSection({
+         <div className="grid gap-2 max-w-48">
+           <div className="flex items-center justify-between">
+             <Label className="text-sm text-muted-foreground">Amount</Label>
+-            <span className="text-sm font-mono">{config.amount.toFixed(1)}</span>
++            <span className="text-sm font-mono">
++              {config.amount.toFixed(1)}
++            </span>
+           </div>
+           <Slider
+             value={[config.amount]}
+@@ -157,17 +179,68 @@ function IrCaptureSection({
+ }) {
+   return (
+     <div className="space-y-3">
+-      <SectionHeading label="IR Camera Capture" onReset={() => onChange(defaultConfig)} />
++      <SectionHeading
++        label="IR Camera Capture"
++        onReset={() => onChange(defaultConfig)}
++      />
+       <p className="text-sm text-muted-foreground/60">
+-        Timing and retry behavior for IR frame capture. AGC sleep lets the camera's auto-gain control stabilise between attempts.
++        Timing and retry behavior for IR frame capture. AGC sleep lets the
++        camera's auto-gain control stabilise between attempts.
+       </p>
+       <div className="grid grid-cols-3 gap-3">
+-        <NumberInput label="Warmup Frames" value={config.warmup_frames} min={0} max={100} title="Frames to discard after opening camera (flushes stale buffered frames)" onChange={(v) => onChange({ ...config, warmup_frames: v })} />
+-        <NumberInput label="Timeout (ms)" value={config.capture_timeout_ms} min={0} max={30000} step={100} title="Max time to wait for a valid IR frame before giving up" onChange={(v) => onChange({ ...config, capture_timeout_ms: v })} />
+-        <NumberInput label="Poll (ms)" value={config.poll_interval_ms} min={1} max={1000} fallback={33} title="Interval between frame availability checks during capture" onChange={(v) => onChange({ ...config, poll_interval_ms: v })} />
+-        <NumberInput label="Max Attempts" value={config.max_attempts} min={1} max={10} fallback={1} title="Full capture+detect retries before failing" onChange={(v) => onChange({ ...config, max_attempts: v })} />
+-        <NumberInput label="AGC Sleep (ms)" value={config.agc_sleep_ms} min={0} max={10000} step={100} title="Pause between attempts for IR auto-gain-control to stabilise" onChange={(v) => onChange({ ...config, agc_sleep_ms: v })} />
+-        <NumberInput label="Cam Warmup (ms)" value={config.camera_warmup_ms} min={0} max={10000} step={100} title="Initial delay after opening camera before any capture attempt" onChange={(v) => onChange({ ...config, camera_warmup_ms: v })} />
++        <NumberInput
++          label="Warmup Frames"
++          value={config.warmup_frames}
++          min={0}
++          max={100}
++          title="Frames to discard after opening camera (flushes stale buffered frames)"
++          onChange={(v) => onChange({ ...config, warmup_frames: v })}
++        />
++        <NumberInput
++          label="Timeout (ms)"
++          value={config.capture_timeout_ms}
++          min={0}
++          max={30000}
++          step={100}
++          title="Max time to wait for a valid IR frame before giving up"
++          onChange={(v) => onChange({ ...config, capture_timeout_ms: v })}
++        />
++        <NumberInput
++          label="Poll (ms)"
++          value={config.poll_interval_ms}
++          min={1}
++          max={1000}
++          fallback={33}
++          title="Interval between frame availability checks during capture"
++          onChange={(v) => onChange({ ...config, poll_interval_ms: v })}
++        />
++        <NumberInput
++          label="Max Attempts"
++          value={config.max_attempts}
++          min={1}
++          max={10}
++          fallback={1}
++          title="Full capture+detect retries before failing"
++          onChange={(v) => onChange({ ...config, max_attempts: v })}
++        />
++        <NumberInput
++          label="AGC Sleep (ms)"
++          value={config.agc_sleep_ms}
++          min={0}
++          max={10000}
++          step={100}
++          title="Pause between attempts for IR auto-gain-control to stabilise"
++          onChange={(v) => onChange({ ...config, agc_sleep_ms: v })}
++        />
++        <NumberInput
++          label="Cam Warmup (ms)"
++          value={config.camera_warmup_ms}
++          min={0}
++          max={10000}
++          step={100}
++          title="Initial delay after opening camera before any capture attempt"
++          onChange={(v) => onChange({ ...config, camera_warmup_ms: v })}
++        />
+       </div>
+     </div>
+   );
+@@ -184,17 +257,36 @@ function AntiSpoofingAdvancedSection({
+ }) {
+   return (
+     <div className="space-y-3">
+-      <SectionHeading label="Anti-Spoofing Advanced" onReset={() => onChange(defaultConfig)} />
++      <SectionHeading
++        label="Anti-Spoofing Advanced"
++        onReset={() => onChange(defaultConfig)}
++      />
+       <p className="text-sm text-muted-foreground/60">
+-        Spoof class index: which model output class means "spoof" (0 or 1). Combinational mode: "all must pass" (strict) or "any must pass" (relaxed). Debug save path: where failed auth images are saved.
++        Spoof class index: which model output class means "spoof" (0 or 1).
++        Combinational mode: "all must pass" (strict) or "any must pass"
++        (relaxed). Debug save path: where failed auth images are saved.
+       </p>
+       <div className="grid grid-cols-3 gap-3">
+-        <NumberInput label="Spoof Class Index" value={config.spoof_class} min={0} max={10} title="Which model output class index corresponds to spoof attack" onChange={(v) => onChange({ ...config, spoof_class: v })} />
++        <NumberInput
++          label="Spoof Class Index"
++          value={config.spoof_class}
++          min={0}
++          max={10}
++          title="Which model output class index corresponds to spoof attack"
++          onChange={(v) => onChange({ ...config, spoof_class: v })}
++        />
+         <div className="grid gap-1">
+-          <Label className="text-sm text-muted-foreground" title="Whether all anti-spoofing methods must pass, or any one is sufficient">Combinational Mode</Label>
++          <Label
++            className="text-sm text-muted-foreground"
++            title="Whether all anti-spoofing methods must pass, or any one is sufficient"
++          >
++            Combinational Mode
++          </Label>
+           <Select
+             value={config.combinational_mode}
+-            onValueChange={(v) => onChange({ ...config, combinational_mode: v as "all" | "any" })}
++            onValueChange={(v) =>
++              onChange({ ...config, combinational_mode: v as "all" | "any" })
++            }
+           >
+             <SelectTrigger className="h-10 text-sm">
+               <SelectValue />
+@@ -206,11 +298,18 @@ function AntiSpoofingAdvancedSection({
+           </Select>
+         </div>
+         <div className="grid gap-1">
+-          <Label className="text-sm text-muted-foreground" title="Directory for saving failed auth debug images (empty = default)">Debug Save Path</Label>
++          <Label
++            className="text-sm text-muted-foreground"
++            title="Directory for saving failed auth debug images (empty = default)"
++          >
++            Debug Save Path
++          </Label>
+           <Input
+             type="text"
+             value={config.debug_save_path}
+-            onChange={(e) => onChange({ ...config, debug_save_path: e.target.value })}
++            onChange={(e) =>
++              onChange({ ...config, debug_save_path: e.target.value })
++            }
+             placeholder="(default)"
+             className="h-10 text-sm"
+           />
+@@ -231,16 +330,36 @@ function DetectionAdvancedSection({
+ }) {
+   return (
+     <div className="space-y-3">
+-      <SectionHeading label="Detection Advanced" onReset={() => onChange(defaultConfig)} />
++      <SectionHeading
++        label="Detection Advanced"
++        onReset={() => onChange(defaultConfig)}
++      />
+       <p className="text-sm text-muted-foreground/60">
+-        YOLOv8 input size (higher = better accuracy, slower). NMS IoU threshold for merging overlapping face boxes — lower = less overlap tolerance.
++        YOLOv8 input size (higher = better accuracy, slower). NMS IoU threshold
++        for merging overlapping face boxes — lower = less overlap tolerance.
+       </p>
+       <div className="grid grid-cols-2 gap-3">
+-        <NumberInput label="Input Size" value={config.input_size} min={160} max={1920} step={32} fallback={640} title="YOLOv8 network input dimension (width = height)" onChange={(v) => onChange({ ...config, input_size: v })} />
++        <NumberInput
++          label="Input Size"
++          value={config.input_size}
++          min={160}
++          max={1920}
++          step={32}
++          fallback={640}
++          title="YOLOv8 network input dimension (width = height)"
++          onChange={(v) => onChange({ ...config, input_size: v })}
++        />
+         <div className="grid gap-1">
+           <div className="flex items-center justify-between">
+-            <Label className="text-sm text-muted-foreground" title="Overlap threshold for merging duplicate face boxes (lower = stricter)">NMS IoU</Label>
+-            <span className="text-sm font-mono">{(config.nms_iou_threshold * 100).toFixed(0)}%</span>
++            <Label
++              className="text-sm text-muted-foreground"
++              title="Overlap threshold for merging duplicate face boxes (lower = stricter)"
++            >
++              NMS IoU
++            </Label>
++            <span className="text-sm font-mono">
++              {(config.nms_iou_threshold * 100).toFixed(0)}%
++            </span>
+           </div>
+           <div className="h-10 flex items-center">
+             <Slider
+@@ -248,7 +367,9 @@ function DetectionAdvancedSection({
+               min={0}
+               max={1}
+               step={0.01}
+-              onValueChange={([v]) => onChange({ ...config, nms_iou_threshold: v })}
++              onValueChange={([v]) =>
++                onChange({ ...config, nms_iou_threshold: v })
++              }
+             />
+           </div>
+         </div>
+@@ -268,13 +389,35 @@ function CaptureResolutionSection({
+ }) {
+   return (
+     <div className="space-y-3">
+-      <SectionHeading label="Capture Resolution" onReset={() => onChange(defaultConfig)} />
++      <SectionHeading
++        label="Capture Resolution"
++        onReset={() => onChange(defaultConfig)}
++      />
+       <p className="text-sm text-muted-foreground/60">
+-        Frame width/height for the RGB camera. Higher = better detection at distance but slower. Preview FPS is controlled from the camera preview bar above.
++        Frame width/height for the RGB camera. Higher = better detection at
++        distance but slower.
+       </p>
+       <div className="grid grid-cols-2 gap-3">
+-        <NumberInput label="Width" value={config.width} min={160} max={3840} step={16} fallback={640} title="Capture frame width in pixels" onChange={(v) => onChange({ ...config, width: v })} />
+-        <NumberInput label="Height" value={config.height} min={120} max={2160} step={16} fallback={480} title="Capture frame height in pixels" onChange={(v) => onChange({ ...config, height: v })} />
++        <NumberInput
++          label="Width"
++          value={config.width}
++          min={160}
++          max={3840}
++          step={16}
++          fallback={640}
++          title="Capture frame width in pixels"
++          onChange={(v) => onChange({ ...config, width: v })}
++        />
++        <NumberInput
++          label="Height"
++          value={config.height}
++          min={120}
++          max={2160}
++          step={16}
++          fallback={480}
++          title="Capture frame height in pixels"
++          onChange={(v) => onChange({ ...config, height: v })}
++        />
+       </div>
+     </div>
+   );
+@@ -291,12 +434,24 @@ function EnrollmentSection({
+ }) {
+   return (
+     <div className="space-y-3">
+-      <SectionHeading label="Enrollment" onReset={() => onChange(defaultConfig)} />
++      <SectionHeading
++        label="Enrollment"
++        onReset={() => onChange(defaultConfig)}
++      />
+       <p className="text-sm text-muted-foreground/60">
+-        Number of frames to capture when enrolling a new face. More frames improve recognition robustness at the cost of slower enrollment.
++        Number of frames to capture when enrolling a new face. More frames
++        improve recognition robustness at the cost of slower enrollment.
+       </p>
+       <div className="grid grid-cols-1 gap-3 max-w-32">
+-        <NumberInput label="Capture Count" value={config.capture_count} min={1} max={20} fallback={1} title="Number of face frames to capture during enrollment" onChange={(v) => onChange({ ...config, capture_count: v })} />
++        <NumberInput
++          label="Capture Count"
++          value={config.capture_count}
++          min={1}
++          max={20}
++          fallback={1}
++          title="Number of face frames to capture during enrollment"
++          onChange={(v) => onChange({ ...config, capture_count: v })}
++        />
+       </div>
+     </div>
+   );
+@@ -313,17 +468,28 @@ function RecognitionAdvancedSection({
+ }) {
+   return (
+     <div className="space-y-3">
+-      <SectionHeading label="Recognition Advanced" onReset={() => onChange(defaultConfig)} />
++      <SectionHeading
++        label="Recognition Advanced"
++        onReset={() => onChange(defaultConfig)}
++      />
+       <p className="text-sm text-muted-foreground/60">
+-        Custom directory for enrolled face images. Leave empty to use the default data directory.
++        Custom directory for enrolled face images. Leave empty to use the
++        default data directory.
+       </p>
+       <div className="grid grid-cols-1 gap-3">
+         <div className="grid gap-1">
+-          <Label className="text-sm text-muted-foreground" title="Custom directory for storing enrolled face images (empty = default)">Gallery Path</Label>
++          <Label
++            className="text-sm text-muted-foreground"
++            title="Custom directory for storing enrolled face images (empty = default)"
++          >
++            Gallery Path
++          </Label>
+           <Input
+             type="text"
+             value={config.gallery_path}
+-            onChange={(e) => onChange({ ...config, gallery_path: e.target.value })}
++            onChange={(e) =>
++              onChange({ ...config, gallery_path: e.target.value })
++            }
+             placeholder="(default data dir)"
+             className="h-10 text-sm"
+           />
+@@ -344,18 +510,37 @@ function AuthTimeoutSection({
+ }) {
+   return (
+     <div className="space-y-3">
+-      <SectionHeading label="Authentication Timeout" onReset={() => onChange(defaultConfig)} />
++      <SectionHeading
++        label="Authentication Timeout"
++        onReset={() => onChange(defaultConfig)}
++      />
+       <p className="text-sm text-muted-foreground/60">
+-        Hard cap on total authentication time in milliseconds. 0 = auto (computed from retries × retry delay + 5s margin).
++        Hard cap on total authentication time in milliseconds. 0 = auto
++        (computed from retries × retry delay + 5s margin).
+       </p>
+       <div className="grid grid-cols-1 gap-3 max-w-48">
+-        <NumberInput label="Max Auth Time (ms, 0 = auto)" value={config.max_time_ms} min={0} max={60000} step={100} fallback={0} title="Absolute timeout for entire authentication (0 = auto from retries \u00d7 delay + margin)" onChange={(v) => onChange({ ...config, max_time_ms: v })} />
++        <NumberInput
++          label="Max Auth Time (ms, 0 = auto)"
++          value={config.max_time_ms}
++          min={0}
++          max={60000}
++          step={100}
++          fallback={0}
++          title="Absolute timeout for entire authentication (0 = auto from retries \u00d7 delay + margin)"
++          onChange={(v) => onChange({ ...config, max_time_ms: v })}
++        />
+       </div>
+     </div>
+   );
+ }
+ 
+-function SectionHeading({ label, onReset }: { label: string; onReset: () => void }) {
++function SectionHeading({
++  label,
++  onReset,
++}: {
++  label: string;
++  onReset: () => void;
++}) {
+   return (
+     <h5 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+       <span>{label}</span>
+@@ -392,14 +577,18 @@ function NumberInput({
+ }) {
+   return (
+     <div className="grid gap-1">
+-      <Label className="text-sm text-muted-foreground" title={title}>{label}</Label>
++      <Label className="text-sm text-muted-foreground" title={title}>
++        {label}
++      </Label>
+       <Input
+         type="number"
+         min={min}
+         max={max}
+         step={step ?? 1}
+         value={value}
+-        onChange={(e) => onChange(parseInt(e.target.value, 10) || (fallback ?? 0))}
++        onChange={(e) =>
++          onChange(parseInt(e.target.value, 10) || (fallback ?? 0))
++        }
+         className="h-10 text-sm"
+       />
+     </div>
+diff --git a/app/src/app/configuration/-components/face/FaceCapture.tsx b/app/src/app/configuration/-components/face/FaceCapture.tsx
+index 76e689c..0d2e8ab 100644
+--- a/app/src/app/configuration/-components/face/FaceCapture.tsx
++++ b/app/src/app/configuration/-components/face/FaceCapture.tsx
+@@ -1,29 +1,18 @@
+ import { convertFileSrc } from "@tauri-apps/api/core";
+-import { Camera, Circle, Square, Trash2, AlertCircle } from "lucide-react";
++import { AlertCircle, Camera, Circle, Square, Trash2 } from "lucide-react";
+ import { useCallback, useEffect, useRef, useState } from "react";
+ import { toast } from "sonner";
+ import { cmd } from "@/commands";
+ import { Button } from "@/components/ui/button";
+-import {
+-  Select,
+-  SelectContent,
+-  SelectItem,
+-  SelectTrigger,
+-  SelectValue,
+-} from "@/components/ui/select";
+-
+-const FPS_OPTIONS = [
+-  { label: "3 FPS", interval: 300, fps: 3 },
+-  { label: "15 FPS", interval: 66, fps: 15 },
+-  { label: "30 FPS", interval: 33, fps: 30 },
+-] as const;
+-
+-function fpsToIndex(fps: number): number {
+-  const idx = FPS_OPTIONS.findIndex((o) => o.fps === fps);
+-  return idx >= 0 ? idx : 0;
+-}
+-
+-export function FaceCapture({ selectedDevicePath, previewFps, onPreviewFpsChange, captureWidth, captureHeight }: {
++import { Input } from "@/components/ui/input";
++
++export function FaceCapture({
++  selectedDevicePath,
++  previewFps,
++  onPreviewFpsChange,
++  captureWidth,
++  captureHeight,
++}: {
+   selectedDevicePath?: string;
+   previewFps?: number;
+   onPreviewFpsChange?: (fps: number) => void;
+@@ -35,7 +24,7 @@ export function FaceCapture({ selectedDevicePath, previewFps, onPreviewFpsChange
+   const [capturing, setCapturing] = useState(false);
+   const [faceImages, setFaceImages] = useState<string[]>([]);
+   const [nativeFrame, setNativeFrame] = useState<string | null>(null);
+-  const [fpsIndex, setFpsIndex] = useState(fpsToIndex(previewFps ?? 3));
++  const [localFps, setLocalFps] = useState(previewFps ?? 3);
+   const capturedFrameRef = useRef<string | null>(null);
+ 
+   const loadFaceImages = useCallback(async () => {
+@@ -51,13 +40,6 @@ export function FaceCapture({ selectedDevicePath, previewFps, onPreviewFpsChange
+     loadFaceImages();
+   }, [loadFaceImages]);
+ 
+-  useEffect(() => {
+-    return () => {
+-      stopPolling();
+-      cmd.face.stopCameraPreview().catch(() => {});
+-    };
+-  }, []);
+-
+   function stopPolling() {
+     if (pollingRef.current !== null) {
+       clearInterval(pollingRef.current);
+@@ -65,9 +47,17 @@ export function FaceCapture({ selectedDevicePath, previewFps, onPreviewFpsChange
+     }
+   }
+ 
+-  async function pollFrames() {
++  // biome-ignore lint/correctness/useExhaustiveDependencies: stopPolling behavior is stable across renders
++  useEffect(() => {
++    return () => {
++      stopPolling();
++      cmd.face.stopCameraPreview().catch(() => {});
++    };
++  }, []);
++
++  function pollFrames() {
+     stopPolling();
+-    const interval = FPS_OPTIONS[fpsIndex].interval;
++    const interval = Math.max(16, Math.round(1000 / localFps));
+     pollingRef.current = window.setInterval(async () => {
+       try {
+         const frame = await cmd.face.getPreviewFrame();
+@@ -171,32 +161,26 @@ export function FaceCapture({ selectedDevicePath, previewFps, onPreviewFpsChange
+           <AlertCircle className="w-3 h-3 shrink-0" />
+           <span className="flex-1">
+             Using native camera capture —{" "}
+-            {capturing
+-              ? `${FPS_OPTIONS[fpsIndex].label}`
+-              : "preview not started"}
++            {capturing ? `${localFps} FPS` : "preview not started"}
+           </span>
+-          <Select
+-            value={String(fpsIndex)}
+-            onValueChange={(v) => {
+-              const idx = Number(v);
+-              setFpsIndex(idx);
+-              if (onPreviewFpsChange) {
+-                onPreviewFpsChange(FPS_OPTIONS[idx].fps);
+-              }
+-              if (capturing) pollFrames();
+-            }}
+-          >
+-            <SelectTrigger className="h-6 text-xs w-20 border-amber-500/30">
+-              <SelectValue />
+-            </SelectTrigger>
+-            <SelectContent>
+-              {FPS_OPTIONS.map((opt, i) => (
+-                <SelectItem key={i} value={String(i)}>
+-                  {opt.label}
+-                </SelectItem>
+-              ))}
+-            </SelectContent>
+-          </Select>
++          <div className="flex items-center gap-1">
++            <Input
++              type="number"
++              min={1}
++              max={120}
++              value={localFps}
++              onChange={(e) => {
++                const v = Number(e.target.value);
++                if (v >= 1 && v <= 120) {
++                  setLocalFps(v);
++                  if (onPreviewFpsChange) onPreviewFpsChange(v);
++                  if (capturing) pollFrames();
++                }
++              }}
++              className="h-6 w-16 text-xs text-amber-500 bg-amber-500/5 border-amber-500/30 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
++            />
++            <span className="text-amber-500/70">FPS</span>
++          </div>
+         </div>
+ 
+         <div className="flex gap-2">
+diff --git a/app/src/app/configuration/page.tsx b/app/src/app/configuration/page.tsx
+index 2425d10..ef144db 100644
+--- a/app/src/app/configuration/page.tsx
++++ b/app/src/app/configuration/page.tsx
+@@ -17,8 +17,10 @@ function ConfigurationRouteComponent() {
+   const resetConfig = useConfigurationStore((state) => state.resetConfig);
+ 
+   useEffect(() => {
+-    initializeConfig();
+-  }, [initializeConfig]);
++    if (!config) {
++      initializeConfig();
++    }
++  }, [config, initializeConfig]);
+ 
+   if (loading || !config) {
+     return (

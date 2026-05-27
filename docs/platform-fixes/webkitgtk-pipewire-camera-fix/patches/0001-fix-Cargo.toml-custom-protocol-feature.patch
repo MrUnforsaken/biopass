@@ -1,0 +1,20 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0001] Add custom-protocol to Tauri features
+
+Restore the custom-protocol feature which is excluded when protocol-asset is specified without it.
+Without both features, Tauri IPC fails with "Connection refused".
+
+diff --git a/app/src-tauri/Cargo.toml b/app/src-tauri/Cargo.toml
+index 40356c0..70d7121 100644
+--- a/app/src-tauri/Cargo.toml
++++ b/app/src-tauri/Cargo.toml
+@@ -19,7 +19,7 @@ tauri-build = { version = "2", features = [] }
+ pkg-config = "0.3"
+ 
+ [dependencies]
+-tauri = { version = "2", features = ["protocol-asset"] }
++tauri = { version = "2", features = ["protocol-asset", "custom-protocol"] }
+ tauri-plugin-opener = "2"
+ tauri-plugin-fs = "2"
+ serde = { version = "1", features = ["derive"] }

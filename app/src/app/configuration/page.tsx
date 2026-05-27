@@ -17,8 +17,10 @@ function ConfigurationRouteComponent() {
   const resetConfig = useConfigurationStore((state) => state.resetConfig);
 
   useEffect(() => {
-    initializeConfig();
-  }, [initializeConfig]);
+    if (!config) {
+      initializeConfig();
+    }
+  }, [config, initializeConfig]);
 
   if (loading || !config) {
     return (

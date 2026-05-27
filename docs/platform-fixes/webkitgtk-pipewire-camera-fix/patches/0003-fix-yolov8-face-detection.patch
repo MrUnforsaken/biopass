@@ -1,0 +1,41 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0003] Expose nms_boxes from face detection utils
+
+Make the internal `nms` function public as `nms_boxes` so that the face detection decode in 0009 can use it directly instead of going through the legacy `non_max_suppression` wrapper.
+
+diff --git a/auth/face/detection/utils.cc b/auth/face/detection/utils.cc
+index 1503f4e..0017835 100644
+--- a/auth/face/detection/utils.cc
++++ b/auth/face/detection/utils.cc
+@@ -4,7 +4,7 @@
+ #include <cmath>
+ #include <numeric>
+ 
+-static std::vector<int> nms(const std::vector<RawDet>& dets, float iou_threshold) {
++std::vector<int> nms_boxes(const std::vector<RawDet>& dets, float iou_threshold) {
+   if (dets.empty())
+     return {};
+ 
+@@ -83,7 +83,7 @@ std::vector<RawDet> non_max_suppression(const float* output, int num_preds, int
+     candidates.push_back(d);
+   }
+ 
+-  auto keep_indices = nms(candidates, iou_thres);
++  auto keep_indices = nms_boxes(candidates, iou_thres);
+   std::vector<RawDet> result;
+   for (int i = 0; i < std::min(static_cast<int>(keep_indices.size()), max_det); i++) {
+     result.push_back(candidates[keep_indices[i]]);
+diff --git a/auth/face/detection/utils.h b/auth/face/detection/utils.h
+index ed5418c..19f551b 100644
+--- a/auth/face/detection/utils.h
++++ b/auth/face/detection/utils.h
+@@ -13,6 +13,8 @@ std::vector<RawDet> non_max_suppression(const float* output, int num_preds, int
+                                         float conf_thres = 0.25, float iou_thres = 0.45,
+                                         int max_det = 300);
+ 
++std::vector<int> nms_boxes(const std::vector<RawDet>& dets, float iou_threshold);
++
+ void scale_boxes(const std::vector<int>& img1_shape, std::vector<RawDet>& dets,
+                  const std::vector<int>& img0_shape);
+ 

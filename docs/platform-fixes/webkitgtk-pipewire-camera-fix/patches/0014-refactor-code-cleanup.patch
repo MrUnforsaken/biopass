@@ -1,0 +1,1015 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0014] Refactor code cleanup
+
+Extract parseAdvancedConfig() from inline YAML parsing in auth_config.cc.
+Split advanced settings GUI into AdvancedFaceSettings.tsx (8 section components + NumberInput helper).
+Use struct-level #[serde(default)] instead of per-field default_* functions in config.rs.
+Remove 16 default_* Rust functions.
+
+diff --git a/app/src-tauri/src/config.rs b/app/src-tauri/src/config.rs
+index c3da51c..5139a93 100644
+--- a/app/src-tauri/src/config.rs
++++ b/app/src-tauri/src/config.rs
+@@ -30,6 +30,115 @@ pub struct MethodsConfig {
+     pub fingerprint: FingerprintMethodConfig,
+ }
+ 
++#[derive(Debug, Serialize, Deserialize, Clone)]
++#[serde(default)]
++pub struct UnsharpMaskConfig {
++    pub enable: bool,
++    pub amount: f32,
++}
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++#[serde(default)]
++pub struct IRCaptureConfig {
++    pub warmup_frames: i32,
++    pub capture_timeout_ms: i32,
++    pub poll_interval_ms: i32,
++    pub max_attempts: i32,
++    pub agc_sleep_ms: i32,
++    pub camera_warmup_ms: i32,
++}
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++#[serde(default)]
++pub struct CaptureAdvancedConfig {
++    pub width: i32,
++    pub height: i32,
++    pub preview_fps: i32,
++}
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++#[serde(default)]
++pub struct DetectionAdvancedConfig {
++    pub input_size: i32,
++    pub nms_iou_threshold: f32,
++}
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++#[serde(default)]
++pub struct AntiSpoofingAdvancedConfig {
++    pub spoof_class: i32,
++    pub combinational_mode: String,
++    pub debug_save_path: String,
++}
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++#[serde(default)]
++pub struct EnrollmentAdvancedConfig {
++    pub capture_count: i32,
++}
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++#[serde(default)]
++pub struct RecognitionAdvancedConfig {
++    pub gallery_path: String,
++}
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++#[serde(default)]
++pub struct AuthAdvancedConfig {
++    pub max_time_ms: i32,
++}
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++#[serde(default)]
++pub struct AdvancedConfig {
++    pub unsharp_mask: UnsharpMaskConfig,
++    pub ir_capture: IRCaptureConfig,
++    pub capture: CaptureAdvancedConfig,
++    pub detection: DetectionAdvancedConfig,
++    pub anti_spoofing: AntiSpoofingAdvancedConfig,
++    pub enrollment: EnrollmentAdvancedConfig,
++    pub recognition: RecognitionAdvancedConfig,
++    pub auth: AuthAdvancedConfig,
++}
++
++impl Default for UnsharpMaskConfig {
++    fn default() -> Self { Self { enable: true, amount: 5.0 } }
++}
++impl Default for IRCaptureConfig {
++    fn default() -> Self { Self { warmup_frames: 3, capture_timeout_ms: 5000, poll_interval_ms: 33, max_attempts: 2, agc_sleep_ms: 500, camera_warmup_ms: 0 } }
++}
++impl Default for CaptureAdvancedConfig {
++    fn default() -> Self { Self { width: 640, height: 480, preview_fps: 3 } }
++}
++impl Default for DetectionAdvancedConfig {
++    fn default() -> Self { Self { input_size: 640, nms_iou_threshold: 0.50 } }
++}
++impl Default for AntiSpoofingAdvancedConfig {
++    fn default() -> Self { Self { spoof_class: 1, combinational_mode: "all".to_string(), debug_save_path: "".to_string() } }
++}
++impl Default for EnrollmentAdvancedConfig {
++    fn default() -> Self { Self { capture_count: 1 } }
++}
++impl Default for RecognitionAdvancedConfig {
++    fn default() -> Self { Self { gallery_path: "".to_string() } }
++}
++impl Default for AuthAdvancedConfig {
++    fn default() -> Self { Self { max_time_ms: 0 } }
++}
++impl Default for AdvancedConfig {
++    fn default() -> Self { Self {
++        unsharp_mask: Default::default(),
++        ir_capture: Default::default(),
++        capture: Default::default(),
++        detection: Default::default(),
++        anti_spoofing: Default::default(),
++        enrollment: Default::default(),
++        recognition: Default::default(),
++        auth: Default::default(),
++    }}
++}
++
+ #[derive(Debug, Serialize, Clone)]
+ pub struct FaceMethodConfig {
+     pub enable: bool,
+@@ -38,6 +147,10 @@ pub struct FaceMethodConfig {
+     pub detection: DetectionConfig,
+     pub recognition: RecognitionConfig,
+     pub anti_spoofing: AntiSpoofingConfig,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub camera_device: Option<String>,
++    #[serde(default)]
++    pub advanced: AdvancedConfig,
+ }
+ 
+ #[derive(Debug, Deserialize, Default)]
+@@ -75,7 +188,11 @@ struct FaceMethodConfigRaw {
+     #[serde(default)]
+     pub anti_spoofing: AntiSpoofingConfigRaw,
+     #[serde(default)]
++    pub camera_device: Option<String>,
++    #[serde(default)]
+     pub ir_camera: Option<LegacyIRCameraConfig>,
++    #[serde(default)]
++    pub advanced: AdvancedConfig,
+ }
+ 
+ impl<'de> Deserialize<'de> for FaceMethodConfig {
+@@ -102,6 +219,8 @@ impl<'de> Deserialize<'de> for FaceMethodConfig {
+             detection: raw.detection,
+             recognition: raw.recognition,
+             anti_spoofing,
++            camera_device: raw.camera_device,
++            advanced: raw.advanced,
+         })
+     }
+ }
+@@ -278,6 +397,8 @@ fn get_default_config(app: &AppHandle) -> BiopassConfig {
+                     },
+                     ir_camera: None,
+                 },
++                camera_device: None,
++                advanced: AdvancedConfig::default(),
+             },
+             fingerprint: FingerprintMethodConfig {
+                 enable: false,
+diff --git a/app/src/app/__root.tsx b/app/src/app/__root.tsx
+index 7a154fa..dbc991a 100644
+--- a/app/src/app/__root.tsx
++++ b/app/src/app/__root.tsx
+@@ -6,7 +6,7 @@ import {
+ } from "@tanstack/react-router";
+ import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
+ import { getCurrentWindow } from "@tauri-apps/api/window";
+-import { Cpu, Laptop, Moon, Settings, Sun, User } from "lucide-react";
++import { Cpu, Laptop, Moon, Settings, Sun, User, Wrench } from "lucide-react";
+ import { useTheme } from "next-themes";
+ import { useEffect, useRef, useState } from "react";
+ import logo from "@/assets/logo.png";
+@@ -138,6 +138,17 @@ function App() {
+                   <Cpu className="w-4 h-4" />
+                   <span className="text-sm font-medium">AI Models</span>
+                 </Link>
++                <Link
++                  to="/advanced"
++                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
++                    pathname === "/advanced"
++                      ? "bg-primary/10 text-primary"
++                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
++                  }`}
++                >
++                  <Wrench className="w-4 h-4" />
++                  <span className="text-sm font-medium">Advanced</span>
++                </Link>
+               </div>
+             </div>
+ 
+diff --git a/app/src/app/advanced.tsx b/app/src/app/advanced.tsx
+new file mode 100644
+index 0000000..4ff2e0e
+--- /dev/null
++++ b/app/src/app/advanced.tsx
+@@ -0,0 +1,40 @@
++import { createFileRoute } from "@tanstack/react-router";
++import type { AdvancedConfig, FaceMethodConfig } from "@/types/config";
++import { useConfigurationStore } from "../app/configuration/-stores/configuration-store";
++import { AdvancedFaceSettings } from "../app/configuration/-components/face/AdvancedFaceSettings";
++
++function AdvancedRouteComponent() {
++  const config = useConfigurationStore((state) => state.config?.methods.face);
++  const setFaceConfig = useConfigurationStore((state) => state.setFaceConfig);
++
++  if (!config) return null;
++
++  const faceConfig: FaceMethodConfig = config;
++
++  function setAdvancedField<K extends keyof AdvancedConfig>(key: K, value: AdvancedConfig[K]) {
++    setFaceConfig({ ...faceConfig, advanced: { ...faceConfig.advanced, [key]: value } } as FaceMethodConfig);
++  }
++
++  return (
++    <div className="flex flex-col gap-6 w-full max-w-4xl mx-auto p-6">
++      <div>
++        <h1 className="text-3xl font-bold bg-linear-to-r from-primary to-purple-500 bg-clip-text text-transparent">
++          Advanced Settings
++        </h1>
++        <p className="text-sm text-muted-foreground mt-1">
++          Tuning parameters for face detection, IR capture, anti-spoofing, and more.
++        </p>
++      </div>
++
++      <AdvancedFaceSettings
++        advanced={config.advanced}
++        onChange={setAdvancedField}
++        alwaysOpen
++      />
++    </div>
++  );
++}
++
++export const Route = createFileRoute("/advanced")({
++  component: AdvancedRouteComponent,
++});
+diff --git a/app/src/app/configuration/-components/face/AdvancedFaceSettings.tsx b/app/src/app/configuration/-components/face/AdvancedFaceSettings.tsx
+new file mode 100644
+index 0000000..0c2e8c7
+--- /dev/null
++++ b/app/src/app/configuration/-components/face/AdvancedFaceSettings.tsx
+@@ -0,0 +1,407 @@
++import { useState } from "react";
++import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
++import { Input } from "@/components/ui/input";
++import { Label } from "@/components/ui/label";
++import {
++  Select,
++  SelectContent,
++  SelectItem,
++  SelectTrigger,
++  SelectValue,
++} from "@/components/ui/select";
++import { Slider } from "@/components/ui/slider";
++import type { AdvancedConfig } from "@/types/config";
++import { DEFAULT_ADVANCED_CONFIG } from "@/types/config";
++
++interface AdvancedFaceSettingsProps {
++  advanced: AdvancedConfig;
++  onChange: <K extends keyof AdvancedConfig>(key: K, value: AdvancedConfig[K]) => void;
++  alwaysOpen?: boolean;
++}
++
++export function AdvancedFaceSettings({ advanced, onChange, alwaysOpen }: AdvancedFaceSettingsProps) {
++  const [open, setOpen] = useState(alwaysOpen ?? false);
++
++  const sections = (
++    <div className="space-y-6">
++      <div className="flex justify-end">
++        <button
++          type="button"
++          onClick={() => {
++            (Object.keys(DEFAULT_ADVANCED_CONFIG) as Array<keyof AdvancedConfig>).forEach((key) => {
++              onChange(key, DEFAULT_ADVANCED_CONFIG[key]);
++            });
++          }}
++          className="flex items-center gap-1.5 text-sm text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer"
++          title="Reset all advanced settings to their default values"
++        >
++          <RotateCcw className="w-4 h-4" />
++          Reset all to defaults
++        </button>
++      </div>
++      <UnsharpMaskSection
++        config={advanced.unsharp_mask}
++        defaultConfig={DEFAULT_ADVANCED_CONFIG.unsharp_mask}
++        onChange={(v) => onChange("unsharp_mask", v)}
++      />
++      <IrCaptureSection
++        config={advanced.ir_capture}
++        defaultConfig={DEFAULT_ADVANCED_CONFIG.ir_capture}
++        onChange={(v) => onChange("ir_capture", v)}
++      />
++      <AntiSpoofingAdvancedSection
++        config={advanced.anti_spoofing}
++        defaultConfig={DEFAULT_ADVANCED_CONFIG.anti_spoofing}
++        onChange={(v) => onChange("anti_spoofing", v)}
++      />
++      <DetectionAdvancedSection
++        config={advanced.detection}
++        defaultConfig={DEFAULT_ADVANCED_CONFIG.detection}
++        onChange={(v) => onChange("detection", v)}
++      />
++      <CaptureResolutionSection
++        config={advanced.capture}
++        defaultConfig={DEFAULT_ADVANCED_CONFIG.capture}
++        onChange={(v) => onChange("capture", v)}
++      />
++      <EnrollmentSection
++        config={advanced.enrollment}
++        defaultConfig={DEFAULT_ADVANCED_CONFIG.enrollment}
++        onChange={(v) => onChange("enrollment", v)}
++      />
++      <RecognitionAdvancedSection
++        config={advanced.recognition}
++        defaultConfig={DEFAULT_ADVANCED_CONFIG.recognition}
++        onChange={(v) => onChange("recognition", v)}
++      />
++      <AuthTimeoutSection
++        config={advanced.auth}
++        defaultConfig={DEFAULT_ADVANCED_CONFIG.auth}
++        onChange={(v) => onChange("auth", v)}
++      />
++    </div>
++  );
++
++  if (alwaysOpen) {
++    return sections;
++  }
++
++  return (
++    <div className="p-4 rounded-lg bg-muted/50 border border-border/50 space-y-3">
++      <button
++        type="button"
++        onClick={() => setOpen(!open)}
++        className="flex items-center gap-2 w-full text-left font-medium text-sm cursor-pointer"
++      >
++        {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
++        Advanced Settings
++      </button>
++      {open && sections}
++    </div>
++  );
++}
++
++function UnsharpMaskSection({
++  config,
++  defaultConfig,
++  onChange,
++}: {
++  config: AdvancedConfig["unsharp_mask"];
++  defaultConfig: AdvancedConfig["unsharp_mask"];
++  onChange: (v: AdvancedConfig["unsharp_mask"]) => void;
++}) {
++  return (
++    <div className="space-y-3">
++      <SectionHeading label="Unsharp Mask" onReset={() => onChange(defaultConfig)} />
++      <p className="text-sm text-muted-foreground/60">
++        Sharpens face crops before AI anti-spoofing to restore texture detail lost to webcam compression. Disable if using a model trained on soft images.
++      </p>
++      <div className="flex items-center gap-3">
++        <label className="flex items-center gap-2 text-sm cursor-pointer">
++          <input
++            type="checkbox"
++            checked={config.enable}
++            onChange={(e) => onChange({ ...config, enable: e.target.checked })}
++            className="cursor-pointer"
++          />
++          Enable sharpening
++        </label>
++      </div>
++      {config.enable && (
++        <div className="grid gap-2 max-w-48">
++          <div className="flex items-center justify-between">
++            <Label className="text-sm text-muted-foreground">Amount</Label>
++            <span className="text-sm font-mono">{config.amount.toFixed(1)}</span>
++          </div>
++          <Slider
++            value={[config.amount]}
++            min={0}
++            max={15}
++            step={0.5}
++            onValueChange={([v]) => onChange({ ...config, amount: v })}
++          />
++        </div>
++      )}
++    </div>
++  );
++}
++
++function IrCaptureSection({
++  config,
++  defaultConfig,
++  onChange,
++}: {
++  config: AdvancedConfig["ir_capture"];
++  defaultConfig: AdvancedConfig["ir_capture"];
++  onChange: (v: AdvancedConfig["ir_capture"]) => void;
++}) {
++  return (
++    <div className="space-y-3">
++      <SectionHeading label="IR Camera Capture" onReset={() => onChange(defaultConfig)} />
++      <p className="text-sm text-muted-foreground/60">
++        Timing and retry behavior for IR frame capture. AGC sleep lets the camera's auto-gain control stabilise between attempts.
++      </p>
++      <div className="grid grid-cols-3 gap-3">
++        <NumberInput label="Warmup Frames" value={config.warmup_frames} min={0} max={100} title="Frames to discard after opening camera (flushes stale buffered frames)" onChange={(v) => onChange({ ...config, warmup_frames: v })} />
++        <NumberInput label="Timeout (ms)" value={config.capture_timeout_ms} min={0} max={30000} step={100} title="Max time to wait for a valid IR frame before giving up" onChange={(v) => onChange({ ...config, capture_timeout_ms: v })} />
++        <NumberInput label="Poll (ms)" value={config.poll_interval_ms} min={1} max={1000} fallback={33} title="Interval between frame availability checks during capture" onChange={(v) => onChange({ ...config, poll_interval_ms: v })} />
++        <NumberInput label="Max Attempts" value={config.max_attempts} min={1} max={10} fallback={1} title="Full capture+detect retries before failing" onChange={(v) => onChange({ ...config, max_attempts: v })} />
++        <NumberInput label="AGC Sleep (ms)" value={config.agc_sleep_ms} min={0} max={10000} step={100} title="Pause between attempts for IR auto-gain-control to stabilise" onChange={(v) => onChange({ ...config, agc_sleep_ms: v })} />
++        <NumberInput label="Cam Warmup (ms)" value={config.camera_warmup_ms} min={0} max={10000} step={100} title="Initial delay after opening camera before any capture attempt" onChange={(v) => onChange({ ...config, camera_warmup_ms: v })} />
++      </div>
++    </div>
++  );
++}
++
++function AntiSpoofingAdvancedSection({
++  config,
++  defaultConfig,
++  onChange,
++}: {
++  config: AdvancedConfig["anti_spoofing"];
++  defaultConfig: AdvancedConfig["anti_spoofing"];
++  onChange: (v: AdvancedConfig["anti_spoofing"]) => void;
++}) {
++  return (
++    <div className="space-y-3">
++      <SectionHeading label="Anti-Spoofing Advanced" onReset={() => onChange(defaultConfig)} />
++      <p className="text-sm text-muted-foreground/60">
++        Spoof class index: which model output class means "spoof" (0 or 1). Combinational mode: "all must pass" (strict) or "any must pass" (relaxed). Debug save path: where failed auth images are saved.
++      </p>
++      <div className="grid grid-cols-3 gap-3">
++        <NumberInput label="Spoof Class Index" value={config.spoof_class} min={0} max={10} title="Which model output class index corresponds to spoof attack" onChange={(v) => onChange({ ...config, spoof_class: v })} />
++        <div className="grid gap-1">
++          <Label className="text-sm text-muted-foreground" title="Whether all anti-spoofing methods must pass, or any one is sufficient">Combinational Mode</Label>
++          <Select
++            value={config.combinational_mode}
++            onValueChange={(v) => onChange({ ...config, combinational_mode: v as "all" | "any" })}
++          >
++            <SelectTrigger className="h-10 text-sm">
++              <SelectValue />
++            </SelectTrigger>
++            <SelectContent>
++              <SelectItem value="all">All must pass</SelectItem>
++              <SelectItem value="any">Any must pass</SelectItem>
++            </SelectContent>
++          </Select>
++        </div>
++        <div className="grid gap-1">
++          <Label className="text-sm text-muted-foreground" title="Directory for saving failed auth debug images (empty = default)">Debug Save Path</Label>
++          <Input
++            type="text"
++            value={config.debug_save_path}
++            onChange={(e) => onChange({ ...config, debug_save_path: e.target.value })}
++            placeholder="(default)"
++            className="h-10 text-sm"
++          />
++        </div>
++      </div>
++    </div>
++  );
++}
++
++function DetectionAdvancedSection({
++  config,
++  defaultConfig,
++  onChange,
++}: {
++  config: AdvancedConfig["detection"];
++  defaultConfig: AdvancedConfig["detection"];
++  onChange: (v: AdvancedConfig["detection"]) => void;
++}) {
++  return (
++    <div className="space-y-3">
++      <SectionHeading label="Detection Advanced" onReset={() => onChange(defaultConfig)} />
++      <p className="text-sm text-muted-foreground/60">
++        YOLOv8 input size (higher = better accuracy, slower). NMS IoU threshold for merging overlapping face boxes — lower = less overlap tolerance.
++      </p>
++      <div className="grid grid-cols-2 gap-3">
++        <NumberInput label="Input Size" value={config.input_size} min={160} max={1920} step={32} fallback={640} title="YOLOv8 network input dimension (width = height)" onChange={(v) => onChange({ ...config, input_size: v })} />
++        <div className="grid gap-1">
++          <div className="flex items-center justify-between">
++            <Label className="text-sm text-muted-foreground" title="Overlap threshold for merging duplicate face boxes (lower = stricter)">NMS IoU</Label>
++            <span className="text-sm font-mono">{(config.nms_iou_threshold * 100).toFixed(0)}%</span>
++          </div>
++          <div className="h-10 flex items-center">
++            <Slider
++              value={[config.nms_iou_threshold]}
++              min={0}
++              max={1}
++              step={0.01}
++              onValueChange={([v]) => onChange({ ...config, nms_iou_threshold: v })}
++            />
++          </div>
++        </div>
++      </div>
++    </div>
++  );
++}
++
++function CaptureResolutionSection({
++  config,
++  defaultConfig,
++  onChange,
++}: {
++  config: AdvancedConfig["capture"];
++  defaultConfig: AdvancedConfig["capture"];
++  onChange: (v: AdvancedConfig["capture"]) => void;
++}) {
++  return (
++    <div className="space-y-3">
++      <SectionHeading label="Capture Resolution" onReset={() => onChange(defaultConfig)} />
++      <p className="text-sm text-muted-foreground/60">
++        Frame width/height for the RGB camera. Higher = better detection at distance but slower. Preview FPS is controlled from the camera preview bar above.
++      </p>
++      <div className="grid grid-cols-2 gap-3">
++        <NumberInput label="Width" value={config.width} min={160} max={3840} step={16} fallback={640} title="Capture frame width in pixels" onChange={(v) => onChange({ ...config, width: v })} />
++        <NumberInput label="Height" value={config.height} min={120} max={2160} step={16} fallback={480} title="Capture frame height in pixels" onChange={(v) => onChange({ ...config, height: v })} />
++      </div>
++    </div>
++  );
++}
++
++function EnrollmentSection({
++  config,
++  defaultConfig,
++  onChange,
++}: {
++  config: AdvancedConfig["enrollment"];
++  defaultConfig: AdvancedConfig["enrollment"];
++  onChange: (v: AdvancedConfig["enrollment"]) => void;
++}) {
++  return (
++    <div className="space-y-3">
++      <SectionHeading label="Enrollment" onReset={() => onChange(defaultConfig)} />
++      <p className="text-sm text-muted-foreground/60">
++        Number of frames to capture when enrolling a new face. More frames improve recognition robustness at the cost of slower enrollment.
++      </p>
++      <div className="grid grid-cols-1 gap-3 max-w-32">
++        <NumberInput label="Capture Count" value={config.capture_count} min={1} max={20} fallback={1} title="Number of face frames to capture during enrollment" onChange={(v) => onChange({ ...config, capture_count: v })} />
++      </div>
++    </div>
++  );
++}
++
++function RecognitionAdvancedSection({
++  config,
++  defaultConfig,
++  onChange,
++}: {
++  config: AdvancedConfig["recognition"];
++  defaultConfig: AdvancedConfig["recognition"];
++  onChange: (v: AdvancedConfig["recognition"]) => void;
++}) {
++  return (
++    <div className="space-y-3">
++      <SectionHeading label="Recognition Advanced" onReset={() => onChange(defaultConfig)} />
++      <p className="text-sm text-muted-foreground/60">
++        Custom directory for enrolled face images. Leave empty to use the default data directory.
++      </p>
++      <div className="grid grid-cols-1 gap-3">
++        <div className="grid gap-1">
++          <Label className="text-sm text-muted-foreground" title="Custom directory for storing enrolled face images (empty = default)">Gallery Path</Label>
++          <Input
++            type="text"
++            value={config.gallery_path}
++            onChange={(e) => onChange({ ...config, gallery_path: e.target.value })}
++            placeholder="(default data dir)"
++            className="h-10 text-sm"
++          />
++        </div>
++      </div>
++    </div>
++  );
++}
++
++function AuthTimeoutSection({
++  config,
++  defaultConfig,
++  onChange,
++}: {
++  config: AdvancedConfig["auth"];
++  defaultConfig: AdvancedConfig["auth"];
++  onChange: (v: AdvancedConfig["auth"]) => void;
++}) {
++  return (
++    <div className="space-y-3">
++      <SectionHeading label="Authentication Timeout" onReset={() => onChange(defaultConfig)} />
++      <p className="text-sm text-muted-foreground/60">
++        Hard cap on total authentication time in milliseconds. 0 = auto (computed from retries × retry delay + 5s margin).
++      </p>
++      <div className="grid grid-cols-1 gap-3 max-w-48">
++        <NumberInput label="Max Auth Time (ms, 0 = auto)" value={config.max_time_ms} min={0} max={60000} step={100} fallback={0} title="Absolute timeout for entire authentication (0 = auto from retries \u00d7 delay + margin)" onChange={(v) => onChange({ ...config, max_time_ms: v })} />
++      </div>
++    </div>
++  );
++}
++
++function SectionHeading({ label, onReset }: { label: string; onReset: () => void }) {
++  return (
++    <h5 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
++      <span>{label}</span>
++      <button
++        type="button"
++        onClick={onReset}
++        className="inline-flex items-center text-muted-foreground/30 hover:text-foreground transition-colors cursor-pointer"
++        title="Reset this section to defaults"
++      >
++        <RotateCcw className="w-4 h-4" />
++      </button>
++    </h5>
++  );
++}
++
++function NumberInput({
++  label,
++  value,
++  min,
++  max,
++  step,
++  fallback,
++  title,
++  onChange,
++}: {
++  label: string;
++  value: number;
++  min: number;
++  max: number;
++  step?: number;
++  fallback?: number;
++  title?: string;
++  onChange: (v: number) => void;
++}) {
++  return (
++    <div className="grid gap-1">
++      <Label className="text-sm text-muted-foreground" title={title}>{label}</Label>
++      <Input
++        type="number"
++        min={min}
++        max={max}
++        step={step ?? 1}
++        value={value}
++        onChange={(e) => onChange(parseInt(e.target.value, 10) || (fallback ?? 0))}
++        className="h-10 text-sm"
++      />
++    </div>
++  );
++}
+diff --git a/app/src/app/configuration/-components/face/FaceSetting.tsx b/app/src/app/configuration/-components/face/FaceSetting.tsx
+index c6933a9..ea8488c 100644
+--- a/app/src/app/configuration/-components/face/FaceSetting.tsx
++++ b/app/src/app/configuration/-components/face/FaceSetting.tsx
+@@ -9,7 +9,7 @@ import {
+   SelectTrigger,
+   SelectValue,
+ } from "@/components/ui/select";
+-import type { VideoDeviceInfo } from "@/types/config";
++import type { AdvancedConfig, FaceMethodConfig, VideoDeviceInfo } from "@/types/config";
+ import { useConfigurationStore } from "../../-stores/configuration-store";
+ import { ModelSelect } from "../methods/shared/ModelSelect";
+ import { Threshold } from "../methods/shared/Threshold";
+@@ -33,6 +33,13 @@ export function FaceSetting() {
+     fetchDevices();
+   }, []);
+ 
++  const selectedCameraDevice = useMemo(() => {
++    if (!config) return null;
++    const cameraDevice = config.camera_device;
++    if (!cameraDevice) return null;
++    return videoDevices.find((device) => device.path === cameraDevice) ?? null;
++  }, [config, videoDevices]);
++
+   const selectedIrCamera = useMemo(() => {
+     if (!config) return null;
+     const irCameraPath = config.anti_spoofing.ir_camera;
+@@ -46,6 +53,12 @@ export function FaceSetting() {
+ 
+   if (!config) return null;
+ 
++  const faceConfig: FaceMethodConfig = config;
++
++  function setAdvancedField<K extends keyof AdvancedConfig>(key: K, value: AdvancedConfig[K]) {
++    setFaceConfig({ ...faceConfig, advanced: { ...faceConfig.advanced, [key]: value } } as FaceMethodConfig);
++  }
++
+   const disabledOption = "__disabled__";
+   const unavailableAiModelOption = "__unavailable_ai_model__";
+   const unavailableIrDeviceOption = "__unavailable_ir_device__";
+@@ -111,7 +124,43 @@ export function FaceSetting() {
+         </div>
+       </div>
+ 
+-      <FaceCapture />
++      <div className="grid gap-2">
++        <Label htmlFor="camera-device" className="text-xs text-muted-foreground">
++          Camera Device
++        </Label>
++        <Select
++          value={config.camera_device ?? "__default__"}
++          onValueChange={(value) => {
++            setFaceConfig({
++              ...config,
++              camera_device: value === "__default__" ? null : value,
++            });
++          }}
++        >
++          <SelectTrigger id="camera-device" className="h-10 w-full">
++            <SelectValue placeholder="Select Camera Device" />
++          </SelectTrigger>
++          <SelectContent>
++            <SelectItem value="__default__">Default (auto)</SelectItem>
++            {videoDevices.map((device) => (
++              <SelectItem key={device.path} value={device.path}>
++                {device.display_name}
++              </SelectItem>
++            ))}
++          </SelectContent>
++        </Select>
++      </div>
++
++      <FaceCapture
++        selectedDevicePath={selectedCameraDevice?.path}
++        previewFps={config.advanced.capture.preview_fps}
++        onPreviewFpsChange={(fps) =>
++          setAdvancedField("capture", {
++            ...config.advanced.capture,
++            preview_fps: fps,
++          })
++        }
++      />
+ 
+       <div className="p-4 rounded-lg bg-muted/50 border border-border/50">
+         <h4 className="font-medium mb-3 text-sm">Detection</h4>
+@@ -293,6 +342,7 @@ export function FaceSetting() {
+           </Select>
+         </div>
+       </div>
++
+     </div>
+   );
+ }
+diff --git a/app/src/routeTree.gen.ts b/app/src/routeTree.gen.ts
+index b6cdefc..188b8ab 100644
+--- a/app/src/routeTree.gen.ts
++++ b/app/src/routeTree.gen.ts
+@@ -10,6 +10,7 @@
+ 
+ import { Route as rootRouteImport } from './app/__root'
+ import { Route as ModelsRouteImport } from './app/models'
++import { Route as AdvancedRouteImport } from './app/advanced'
+ import { Route as PageRouteImport } from './app/page'
+ import { Route as ConfigurationPageRouteImport } from './app/configuration/page'
+ 
+@@ -18,6 +19,11 @@ const ModelsRoute = ModelsRouteImport.update({
+   path: '/models',
+   getParentRoute: () => rootRouteImport,
+ } as any)
++const AdvancedRoute = AdvancedRouteImport.update({
++  id: '/advanced',
++  path: '/advanced',
++  getParentRoute: () => rootRouteImport,
++} as any)
+ const PageRoute = PageRouteImport.update({
+   id: '/',
+   path: '/',
+@@ -31,30 +37,34 @@ const ConfigurationPageRoute = ConfigurationPageRouteImport.update({
+ 
+ export interface FileRoutesByFullPath {
+   '/': typeof PageRoute
++  '/advanced': typeof AdvancedRoute
+   '/models': typeof ModelsRoute
+   '/configuration/': typeof ConfigurationPageRoute
+ }
+ export interface FileRoutesByTo {
+   '/': typeof PageRoute
++  '/advanced': typeof AdvancedRoute
+   '/models': typeof ModelsRoute
+   '/configuration': typeof ConfigurationPageRoute
+ }
+ export interface FileRoutesById {
+   __root__: typeof rootRouteImport
+   '/': typeof PageRoute
++  '/advanced': typeof AdvancedRoute
+   '/models': typeof ModelsRoute
+   '/configuration/': typeof ConfigurationPageRoute
+ }
+ export interface FileRouteTypes {
+   fileRoutesByFullPath: FileRoutesByFullPath
+-  fullPaths: '/' | '/models' | '/configuration/'
++  fullPaths: '/' | '/advanced' | '/models' | '/configuration/'
+   fileRoutesByTo: FileRoutesByTo
+-  to: '/' | '/models' | '/configuration'
+-  id: '__root__' | '/' | '/models' | '/configuration/'
++  to: '/' | '/advanced' | '/models' | '/configuration'
++  id: '__root__' | '/' | '/advanced' | '/models' | '/configuration/'
+   fileRoutesById: FileRoutesById
+ }
+ export interface RootRouteChildren {
+   PageRoute: typeof PageRoute
++  AdvancedRoute: typeof AdvancedRoute
+   ModelsRoute: typeof ModelsRoute
+   ConfigurationPageRoute: typeof ConfigurationPageRoute
+ }
+@@ -68,6 +78,13 @@ declare module '@tanstack/react-router' {
+       preLoaderRoute: typeof ModelsRouteImport
+       parentRoute: typeof rootRouteImport
+     }
++    '/advanced': {
++      id: '/advanced'
++      path: '/advanced'
++      fullPath: '/advanced'
++      preLoaderRoute: typeof AdvancedRouteImport
++      parentRoute: typeof rootRouteImport
++    }
+     '/': {
+       id: '/'
+       path: '/'
+@@ -87,6 +104,7 @@ declare module '@tanstack/react-router' {
+ 
+ const rootRouteChildren: RootRouteChildren = {
+   PageRoute: PageRoute,
++  AdvancedRoute: AdvancedRoute,
+   ModelsRoute: ModelsRoute,
+   ConfigurationPageRoute: ConfigurationPageRoute,
+ }
+diff --git a/app/src/types/config.ts b/app/src/types/config.ts
+index 2fa71a7..1027fbe 100644
+--- a/app/src/types/config.ts
++++ b/app/src/types/config.ts
+@@ -23,6 +23,71 @@ export interface VideoDeviceInfo {
+   display_name: string;
+ }
+ 
++export interface UnsharpMaskConfig {
++  enable: boolean;
++  amount: number;
++}
++
++export interface IRCaptureConfig {
++  warmup_frames: number;
++  capture_timeout_ms: number;
++  poll_interval_ms: number;
++  max_attempts: number;
++  agc_sleep_ms: number;
++  camera_warmup_ms: number;
++}
++
++export interface CaptureAdvancedConfig {
++  width: number;
++  height: number;
++  preview_fps: number;
++}
++
++export interface DetectionAdvancedConfig {
++  input_size: number;
++  nms_iou_threshold: number;
++}
++
++export interface AntiSpoofingAdvancedConfig {
++  spoof_class: number;
++  combinational_mode: "all" | "any";
++  debug_save_path: string;
++}
++
++export interface EnrollmentAdvancedConfig {
++  capture_count: number;
++}
++
++export interface RecognitionAdvancedConfig {
++  gallery_path: string;
++}
++
++export interface AuthAdvancedConfig {
++  max_time_ms: number;
++}
++
++export const DEFAULT_ADVANCED_CONFIG: AdvancedConfig = {
++  unsharp_mask: { enable: true, amount: 5.0 },
++  ir_capture: { warmup_frames: 3, capture_timeout_ms: 5000, poll_interval_ms: 33, max_attempts: 2, agc_sleep_ms: 500, camera_warmup_ms: 0 },
++  capture: { width: 640, height: 480, preview_fps: 3 },
++  detection: { input_size: 640, nms_iou_threshold: 0.50 },
++  anti_spoofing: { spoof_class: 1, combinational_mode: "all", debug_save_path: "" },
++  enrollment: { capture_count: 1 },
++  recognition: { gallery_path: "" },
++  auth: { max_time_ms: 0 },
++};
++
++export interface AdvancedConfig {
++  unsharp_mask: UnsharpMaskConfig;
++  ir_capture: IRCaptureConfig;
++  capture: CaptureAdvancedConfig;
++  detection: DetectionAdvancedConfig;
++  anti_spoofing: AntiSpoofingAdvancedConfig;
++  enrollment: EnrollmentAdvancedConfig;
++  recognition: RecognitionAdvancedConfig;
++  auth: AuthAdvancedConfig;
++}
++
+ export interface FaceMethodConfig {
+   enable: boolean;
+   retries: number;
+@@ -43,6 +108,8 @@ export interface FaceMethodConfig {
+     };
+     ir_camera: string | null;
+   };
++  camera_device: string | null;
++  advanced: AdvancedConfig;
+ }
+ 
+ export interface FingerprintMethodConfig {
+diff --git a/auth/core/auth_config.cc b/auth/core/auth_config.cc
+index 421dbb2..6d5b9c0 100644
+--- a/auth/core/auth_config.cc
++++ b/auth/core/auth_config.cc
+@@ -38,6 +38,68 @@ std::string user_data_dir(const std::string& username) {
+   return "";
+ }
+ 
++static void parseAdvancedConfig(const YAML::Node& adv, AdvancedConfig& out) {
++  if (!adv || !adv.IsMap()) return;
++
++  // Unsharp mask
++  if (adv["unsharp_mask"]) {
++    const auto& us = adv["unsharp_mask"];
++    if (us["enable"])           out.unsharp_mask.enable = us["enable"].as<bool>();
++    if (us["amount"])           out.unsharp_mask.amount = us["amount"].as<float>();
++  }
++
++  // IR capture
++  if (adv["ir_capture"]) {
++    const auto& ir = adv["ir_capture"];
++    if (ir["warmup_frames"])    out.ir_capture.warmup_frames = ir["warmup_frames"].as<int>();
++    if (ir["capture_timeout_ms"])  out.ir_capture.capture_timeout_ms = ir["capture_timeout_ms"].as<int>();
++    if (ir["poll_interval_ms"]) out.ir_capture.poll_interval_ms = ir["poll_interval_ms"].as<int>();
++    if (ir["max_attempts"])     out.ir_capture.max_attempts = ir["max_attempts"].as<int>();
++    if (ir["agc_sleep_ms"])     out.ir_capture.agc_sleep_ms = ir["agc_sleep_ms"].as<int>();
++    if (ir["camera_warmup_ms"]) out.ir_capture.camera_warmup_ms = ir["camera_warmup_ms"].as<int>();
++  }
++
++  // Capture
++  if (adv["capture"]) {
++    const auto& cap = adv["capture"];
++    if (cap["width"])           out.capture.width = cap["width"].as<int>();
++    if (cap["height"])          out.capture.height = cap["height"].as<int>();
++  }
++
++  // Detection
++  if (adv["detection"]) {
++    const auto& det = adv["detection"];
++    if (det["input_size"])      out.detection.input_size = det["input_size"].as<int>();
++    if (det["nms_iou_threshold"])  out.detection.nms_iou_threshold = det["nms_iou_threshold"].as<float>();
++  }
++
++  // Anti-spoofing
++  if (adv["anti_spoofing"]) {
++    const auto& as_ = adv["anti_spoofing"];
++    if (as_["spoof_class"])     out.anti_spoofing.spoof_class = as_["spoof_class"].as<int>();
++    if (as_["combinational_mode"])  out.anti_spoofing.combinational_mode = as_["combinational_mode"].as<std::string>();
++    if (as_["debug_save_path"]) out.anti_spoofing.debug_save_path = as_["debug_save_path"].as<std::string>();
++  }
++
++  // Enrollment
++  if (adv["enrollment"]) {
++    const auto& enr = adv["enrollment"];
++    if (enr["capture_count"])   out.enrollment.capture_count = enr["capture_count"].as<int>();
++  }
++
++  // Recognition
++  if (adv["recognition"]) {
++    const auto& rec = adv["recognition"];
++    if (rec["gallery_path"])    out.recognition.gallery_path = rec["gallery_path"].as<std::string>();
++  }
++
++  // Auth
++  if (adv["auth"]) {
++    const auto& a = adv["auth"];
++    if (a["max_time_ms"])       out.auth.max_time_ms = a["max_time_ms"].as<int>();
++  }
++}
++
+ BiopassConfig readConfig(const std::string& username) {
+   BiopassConfig config;
+ 
+@@ -121,6 +183,10 @@ BiopassConfig readConfig(const std::string& username) {
+           if (f["recognition"]["threshold"])
+             config.methods.face.recognition.threshold = f["recognition"]["threshold"].as<float>();
+         }
++        if (f["camera_device"] && !f["camera_device"].IsNull()) {
++          config.methods.face.camera_device = f["camera_device"].as<std::string>();
++        }
++
+         if (f["anti_spoofing"]) {
+           const auto& anti_spoofing = f["anti_spoofing"];
+           if (anti_spoofing["enable"]) {
+@@ -153,6 +219,8 @@ BiopassConfig readConfig(const std::string& username) {
+           }
+         }
+ 
++        parseAdvancedConfig(f["advanced"], config.methods.face.advanced);
++
+         // Backward compatibility with old schema:
+         // methods.face.ir_camera.enable + methods.face.ir_camera.device_id
+         const bool ir_camera_missing = !config.methods.face.anti_spoofing.ir_camera.has_value() ||

@@ -1,0 +1,74 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0004] Pass configured camera device to FaceCapture
+
+Add selectedDevicePath prop to FaceCapture and a Camera Device selector dropdown in FaceSetting.
+Add camera_device field to the TypeScript config interface.
+Face-setting now passes the configured camera device path.
+
+diff --git a/app/src/app/configuration/-components/face/FaceSetting.tsx b/app/src/app/configuration/-components/face/FaceSetting.tsx
+index c6933a9..d7b50ce 100644
+--- a/app/src/app/configuration/-components/face/FaceSetting.tsx
++++ b/app/src/app/configuration/-components/face/FaceSetting.tsx
+@@ -33,6 +33,13 @@ export function FaceSetting() {
+     fetchDevices();
+   }, []);
+ 
++  const selectedCameraDevice = useMemo(() => {
++    if (!config) return null;
++    const cameraDevice = config.camera_device;
++    if (!cameraDevice) return null;
++    return videoDevices.find((device) => device.path === cameraDevice) ?? null;
++  }, [config, videoDevices]);
++
+   const selectedIrCamera = useMemo(() => {
+     if (!config) return null;
+     const irCameraPath = config.anti_spoofing.ir_camera;
+@@ -111,7 +118,34 @@ export function FaceSetting() {
+         </div>
+       </div>
+ 
+-      <FaceCapture />
++      <div className="grid gap-2">
++        <Label htmlFor="camera-device" className="text-xs text-muted-foreground">
++          Camera Device
++        </Label>
++        <Select
++          value={config.camera_device ?? "__default__"}
++          onValueChange={(value) => {
++            setFaceConfig({
++              ...config,
++              camera_device: value === "__default__" ? null : value,
++            });
++          }}
++        >
++          <SelectTrigger id="camera-device" className="h-10 w-full">
++            <SelectValue placeholder="Select Camera Device" />
++          </SelectTrigger>
++          <SelectContent>
++            <SelectItem value="__default__">Default (auto)</SelectItem>
++            {videoDevices.map((device) => (
++              <SelectItem key={device.path} value={device.path}>
++                {device.display_name}
++              </SelectItem>
++            ))}
++          </SelectContent>
++        </Select>
++      </div>
++
++      <FaceCapture selectedDevicePath={selectedCameraDevice?.path} />
+ 
+       <div className="p-4 rounded-lg bg-muted/50 border border-border/50">
+         <h4 className="font-medium mb-3 text-sm">Detection</h4>
+diff --git a/app/src/types/config.ts b/app/src/types/config.ts
+index 2fa71a7..4eead29 100644
+--- a/app/src/types/config.ts
++++ b/app/src/types/config.ts
+@@ -43,6 +43,7 @@ export interface FaceMethodConfig {
+     };
+     ir_camera: string | null;
+   };
++  camera_device: string | null;
+ }
+ 
+ export interface FingerprintMethodConfig {

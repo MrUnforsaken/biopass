@@ -1,0 +1,481 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0012] Wire advanced config into face AS, IR, and auth
+
+Pass advanced config parameters through to the actual usage sites:
+- FaceAntiSpoofing: configurable unsharp mask enable/amount + spoof class index
+- IR capture: warmup_frames, timeout, poll_interval, max_attempts, agc_sleep, camera_warmup
+- FaceAuth: use IR params from config, getMaxAuthTimeMs() implementation
+- AntiSpoofCheck: combinational_mode (all/any), pass IR params + unsharp + spoof class
+
+diff --git a/auth/face/antispoofing/antispoof_check.cc b/auth/face/antispoofing/antispoof_check.cc
+index 783ba87..06310b1 100644
+--- a/auth/face/antispoofing/antispoof_check.cc
++++ b/auth/face/antispoofing/antispoof_check.cc
+@@ -26,6 +26,14 @@ AntiSpoofTask make_task(const std::string& name, std::future<bool> future) {
+   return task;
+ }
+ 
++std::string resolveDebugPath(const std::string& username,
++                             const std::string& configured_path) {
++  if (!configured_path.empty()) {
++    return configured_path;
++  }
++  return getDebugPath(username);
++}
++
+ bool checkAntiSpoofByAIModel(const FaceMethodConfig& faceCfg, const std::string& username,
+                              const ImageRGB& face, const AuthConfig& authCfg) {
+   const std::string modelPath = faceCfg.anti_spoofing.model.path;
+@@ -35,7 +43,12 @@ bool checkAntiSpoofByAIModel(const FaceMethodConfig& faceCfg, const std::string&
+   }
+ 
+   try {
+-    FaceAntiSpoofing face_as(modelPath, 128, faceCfg.anti_spoofing.model.threshold);
++    UnsharpMaskParams unsharp;
++    unsharp.enable = faceCfg.advanced.unsharp_mask.enable;
++    unsharp.amount = faceCfg.advanced.unsharp_mask.amount;
++
++    FaceAntiSpoofing face_as(modelPath, 128, faceCfg.anti_spoofing.model.threshold,
++                             faceCfg.advanced.anti_spoofing.spoof_class, unsharp);
+     const SpoofResult result = face_as.inference(face);
+     if (result.spoof) {
+       spdlog::warn("FaceAuth: AI anti-spoofing detected spoof, score: {}", result.score);
+@@ -71,7 +84,11 @@ bool checkAntiSpoof(const FaceMethodConfig& face_config, const std::string& user
+                 ai_enabled, ir_enabled,
+                 face_config.anti_spoofing.ir_camera.value_or(""));
+ 
++  const bool any_mode = face_config.advanced.anti_spoofing.combinational_mode == "any";
++
+   std::vector<AntiSpoofTask> tasks;
++  int passed = 0;
++  int failed = 0;
+ 
+   if (ai_enabled) {
+     const auto face_config_copy = face_config;
+@@ -92,18 +109,19 @@ bool checkAntiSpoof(const FaceMethodConfig& face_config, const std::string& user
+     const auto detection_threshold = face_config.detection.threshold;
+     const auto username_copy = username;
+     const auto debug_enabled = config.debug;
++    const auto ir_params = face_config.advanced.ir_capture;
+     auto* ir_camera_session_ptr = ir_camera_session;
+     tasks.push_back(make_task(
+         "IR", std::async(std::launch::async,
+                          [ir_camera_path, detection_model, detection_threshold, username_copy,
+-                          debug_enabled, ir_camera_session_ptr]() {
++                          debug_enabled, ir_camera_session_ptr, ir_params]() {
+                            return checkAntispoofByIRCamera(ir_camera_path, detection_model,
+                                                            detection_threshold, username_copy,
+-                                                           debug_enabled, ir_camera_session_ptr);
+-        })));
++                                                           debug_enabled, ir_camera_session_ptr,
++                                                           ir_params);
++                         })));
+   }
+ 
+-  bool all_passed = true;
+   for (auto& task : tasks) {
+     bool ok = false;
+     try {
+@@ -114,16 +132,30 @@ bool checkAntiSpoof(const FaceMethodConfig& face_config, const std::string& user
+     }
+     if (ok) {
+       spdlog::debug("FaceAuth: {} anti-spoofing method passed", task.name);
++      passed++;
+     } else {
+       spdlog::debug("FaceAuth: {} anti-spoofing method failed", task.name);
+-      all_passed = false;
++      failed++;
+     }
+   }
+ 
+-  if (!all_passed) {
+-    spdlog::error("FaceAuth: Anti-spoofing failed (one or more enabled methods failed)");
++  if (any_mode) {
++    // Any one method passing is enough
++    if (passed > 0) {
++      spdlog::debug("FaceAuth: Anti-spoofing passed (any mode, {} passed, {} failed)", passed, failed);
++      return true;
++    }
++    spdlog::error("FaceAuth: Anti-spoofing failed (any mode, {} passed, {} failed)", passed, failed);
++    return false;
++  }
++
++  // All mode (default): all methods must pass
++  if (failed > 0) {
++    spdlog::error("FaceAuth: Anti-spoofing failed (all mode, {} passed, {} failed)", passed, failed);
++    return false;
+   }
+-  return all_passed;
++  spdlog::debug("FaceAuth: Anti-spoofing passed (all mode, {} methods)", passed);
++  return true;
+ }
+ 
+ }  // namespace biopass
+diff --git a/auth/face/antispoofing/face_as.cc b/auth/face/antispoofing/face_as.cc
+index 151e246..49bd220 100644
+--- a/auth/face/antispoofing/face_as.cc
++++ b/auth/face/antispoofing/face_as.cc
+@@ -12,10 +12,14 @@ int argmax(const float* data, int size) {
+   return max_index;
+ }
+ 
+-FaceAntiSpoofing::FaceAntiSpoofing(const std::string& ckpt, int imgsz, const float threshold) {
++FaceAntiSpoofing::FaceAntiSpoofing(const std::string& ckpt, int imgsz, const float threshold,
++                                   int spoof_class_index,
++                                   const UnsharpMaskParams& unsharp) {
+   this->ckpt = ckpt;
+   this->imgsz = imgsz;
+   this->threshold = threshold;
++  this->spoof_class_index_ = spoof_class_index;
++  this->unsharp_params_ = unsharp;
+   this->loadModel(ckpt);
+ }
+ 
+@@ -51,7 +55,10 @@ std::vector<float> FaceAntiSpoofing::preprocess(const ImageRGB& input_image) {
+   const float mean[3] = {0.5931f, 0.4690f, 0.4229f};
+   const float std[3] = {0.2471f, 0.2214f, 0.2157f};
+   ImageRGB resize_img = resizeImage(input_image, this->imgsz, this->imgsz);
+-
++  if (this->unsharp_params_.enable) {
++    ImageRGB sharpened = sharpenImage(resize_img, this->unsharp_params_.amount);
++    return imageToChwNormalized(sharpened, mean, std);
++  }
+   return imageToChwNormalized(resize_img, mean, std);
+ }
+ 
+@@ -71,5 +78,5 @@ SpoofResult FaceAntiSpoofing::inference(const ImageRGB& image) {
+ 
+   int spoof_cls = argmax(logits, 2);
+   float score = logits[spoof_cls];
+-  return SpoofResult(score, spoof_cls == 0 && score >= this->threshold);
++  return SpoofResult(score, spoof_cls == this->spoof_class_index_ && score >= this->threshold);
+ }
+diff --git a/auth/face/antispoofing/face_as.h b/auth/face/antispoofing/face_as.h
+index f9d4ca1..f4505f2 100644
+--- a/auth/face/antispoofing/face_as.h
++++ b/auth/face/antispoofing/face_as.h
+@@ -16,9 +16,16 @@ struct SpoofResult {
+   SpoofResult(float score, bool spoof) : score(score), spoof(spoof) {}
+ };
+ 
++struct UnsharpMaskParams {
++  bool enable = true;
++  float amount = 5.0f;
++};
++
+ class FaceAntiSpoofing {
+  public:
+-  FaceAntiSpoofing(const std::string& ckpt, int imgsz = 128, const float threshold = 0.8);
++  FaceAntiSpoofing(const std::string& ckpt, int imgsz = 128, const float threshold = 0.8,
++                   int spoof_class_index = 1,
++                   const UnsharpMaskParams& unsharp = UnsharpMaskParams{});
+ 
+   void loadModel(const std::string& ckpt);
+   SpoofResult inference(const ImageRGB& image);
+@@ -28,6 +35,8 @@ class FaceAntiSpoofing {
+   std::string ckpt;
+   float threshold;
+   int imgsz;
++  int spoof_class_index_;
++  UnsharpMaskParams unsharp_params_;
+ 
+   Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "FaceAntiSpoofing"};
+   std::unique_ptr<Ort::Session> session;
+diff --git a/auth/face/antispoofing/ir_camera_as.cc b/auth/face/antispoofing/ir_camera_as.cc
+index dd8ce84..8ce75a1 100644
+--- a/auth/face/antispoofing/ir_camera_as.cc
++++ b/auth/face/antispoofing/ir_camera_as.cc
+@@ -3,8 +3,10 @@
+ #include <spdlog/spdlog.h>
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cmath>
+ #include <fstream>
++#include <thread>
+ 
+ #include "camera_capture.h"
+ #include "debug_image_io.h"
+@@ -12,18 +14,11 @@
+ 
+ namespace biopass {
+ 
+-namespace {
+-
+-constexpr int kIrCaptureWarmupFrames = 5;
+-constexpr int kIrCaptureTimeoutMs = 3000;
+-constexpr int kIrCapturePollIntervalMs = 10;
+-
+-}  // namespace
+-
+ bool checkAntispoofByIRCamera(const std::string& device_path,
+                               const std::string& detection_model_path, float detection_threshold,
+                               const std::string& username, bool debug,
+-                              ICameraCaptureSession* session) {
++                              ICameraCaptureSession* session,
++                              const IRCaptureParams& ir_params) {
+   if (device_path.empty()) {
+     return false;
+   }
+@@ -33,29 +28,77 @@ bool checkAntispoofByIRCamera(const std::string& device_path,
+     return false;
+   }
+ 
+-  ImageRGB frame;
+-  if (session && session->isOpen()) {
+-    frame = session->capture();
+-  } else {
+-    frame = captureImageByIRCamera(device_path, kIrCaptureWarmupFrames, kIrCaptureTimeoutMs,
+-                                   kIrCapturePollIntervalMs);
++  // If no pre-opened session, create a fresh one
++  std::unique_ptr<ICameraCaptureSession> local_session;
++  if (!session || !session->isOpen()) {
++    local_session = openCameraSession(device_path, CameraCaptureFormat::V4L2NV12,
++                                      ir_params.warmup_frames, ir_params.capture_timeout_ms,
++                                      ir_params.poll_interval_ms);
++    if (!local_session) {
++      spdlog::warn("FaceAuth: NV12 IR capture unavailable for '{}'; falling back to GREY",
++                   device_path);
++      local_session = openCameraSession(device_path, CameraCaptureFormat::V4L2Grey,
++                                        ir_params.warmup_frames, ir_params.capture_timeout_ms,
++                                        ir_params.poll_interval_ms);
++    }
++    if (!local_session) {
++      spdlog::error("FaceAuth: IR camera failed to open {}", device_path);
++      return false;
++    }
++    session = local_session.get();
+   }
+-  if (frame.empty()) {
+-    spdlog::error("FaceAuth: IR camera failed to capture frame from {}", device_path);
+-    return false;
++
++  // Camera warmup delay before first capture (AGC settling, auto-exposure, etc.)
++  if (ir_params.camera_warmup_ms > 0) {
++    std::this_thread::sleep_for(std::chrono::milliseconds(ir_params.camera_warmup_ms));
+   }
+ 
++  int best_face_count = 0;
++
+   try {
+     FaceDetection detector(detection_model_path, 640, {"face"}, detection_threshold);
+-    if (detector.inference(frame).empty()) {
+-      spdlog::error("FaceAuth: IR camera check failed, no face detected in captured frame");
+-      if (debug) {
+-        saveFailedFace(username, frame, "ir_no_face");
++
++    for (int attempt = 0; attempt < ir_params.max_attempts; ++attempt) {
++      // Between attempts, let the IR camera AGC settle
++      if (attempt > 0 && ir_params.agc_sleep_ms > 0) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(ir_params.agc_sleep_ms));
+       }
+-      return false;
++
++      ImageRGB frame = session->capture();
++      if (frame.empty()) {
++        spdlog::warn("FaceAuth: IR capture attempt {}/{} returned empty frame", attempt + 1,
++                     ir_params.max_attempts);
++        continue;
++      }
++
++      auto faces = detector.inference(frame);
++      int face_count = static_cast<int>(faces.size());
++      if (face_count > best_face_count) {
++        best_face_count = face_count;
++      }
++
++      if (face_count > 0) {
++        spdlog::debug("FaceAuth: IR anti-spoofing detected {} face(s) on attempt {}/{}", face_count,
++                      attempt + 1, ir_params.max_attempts);
++        return true;
++      }
++
++      spdlog::debug("FaceAuth: IR anti-spoofing no face on attempt {}/{}", attempt + 1,
++                    ir_params.max_attempts);
+     }
+ 
+-    return true;
++    // All attempts failed
++    spdlog::error("FaceAuth: IR camera check failed, no face detected in {} capture(s) (best: {} face(s))",
++                  ir_params.max_attempts, best_face_count);
++    if (debug) {
++      // Capture one more frame to save as debug (best-effort)
++      ImageRGB debug_frame = session->capture();
++      if (!debug_frame.empty()) {
++        saveFailedFace(username, debug_frame, "ir_no_face");
++      }
++    }
++    return false;
++
+   } catch (const std::exception& e) {
+     spdlog::error("FaceAuth: IR anti-spoofing check failed: {}", e.what());
+     return false;
+diff --git a/auth/face/antispoofing/ir_camera_as.h b/auth/face/antispoofing/ir_camera_as.h
+index 481cb37..3e67067 100644
+--- a/auth/face/antispoofing/ir_camera_as.h
++++ b/auth/face/antispoofing/ir_camera_as.h
+@@ -2,12 +2,17 @@
+ 
+ #include <string>
+ 
++#include "auth_config.h"
++
+ namespace biopass {
+ 
+ class ICameraCaptureSession;
+ 
++using IRCaptureParams = IRCaptureConfig;
++
+ bool checkAntispoofByIRCamera(const std::string& ir_camera_path, const std::string& detection_model_path,
+                               float detection_threshold, const std::string& username,
+-                              bool debug, ICameraCaptureSession* session = nullptr);
++                              bool debug, ICameraCaptureSession* session = nullptr,
++                              const IRCaptureParams& ir_params = IRCaptureParams{});
+ 
+ }  // namespace biopass
+diff --git a/auth/face/face_auth.cc b/auth/face/face_auth.cc
+index 385816b..2587e5d 100644
+--- a/auth/face/face_auth.cc
++++ b/auth/face/face_auth.cc
+@@ -16,26 +16,46 @@
+ 
+ namespace biopass {
+ 
+-namespace {
+-
+-constexpr int kIrCaptureWarmupFrames = 5;
+-constexpr int kIrCaptureTimeoutMs = 3000;
+-constexpr int kIrCapturePollIntervalMs = 10;
++const IRCaptureParams& FaceAuth::irParams() const {
++  return face_config_.advanced.ir_capture;
++}
+ 
+-}  // namespace
++bool FaceAuth::isAvailable() const {
++  return checkCameraAvailability(face_config_.camera_device);
++}
+ 
+-bool FaceAuth::isAvailable() const { return checkCameraAvailability(std::nullopt); }
++uint32_t FaceAuth::getMaxAuthTimeMs() const {
++  if (face_config_.advanced.auth.max_time_ms > 0) {
++    return static_cast<uint32_t>(face_config_.advanced.auth.max_time_ms);
++  }
++  // Default: retries * retry_delay with some margin for capture time
++  return face_config_.retries * face_config_.retry_delay + 5000;
++}
+ 
+ void FaceAuth::beginAuthenticationSession() {
+   if (!camera_session_) {
+-    camera_session_ = openCameraSession(std::nullopt);
++    camera_session_ = openCameraSession(face_config_.camera_device);
+   }
+ 
+   if (face_config_.anti_spoofing.ir_camera.has_value() &&
+       !face_config_.anti_spoofing.ir_camera->empty() && !ir_camera_session_) {
+-    ir_camera_session_ =
+-        openCameraSession(*face_config_.anti_spoofing.ir_camera, CameraCaptureFormat::V4L2Grey,
+-                          kIrCaptureWarmupFrames, kIrCaptureTimeoutMs, kIrCapturePollIntervalMs);
++    // If camera_device and ir_camera point to the same device, reuse the primary session
++    if (face_config_.camera_device.has_value() &&
++        *face_config_.camera_device == *face_config_.anti_spoofing.ir_camera) {
++      spdlog::debug("FaceAuth: IR camera same as primary device, reusing session");
++      ir_camera_session_ = nullptr;
++    } else {
++      const auto& ir = irParams();
++      ir_camera_session_ =
++          openCameraSession(*face_config_.anti_spoofing.ir_camera, CameraCaptureFormat::V4L2NV12,
++                            ir.warmup_frames, ir.capture_timeout_ms, ir.poll_interval_ms);
++      if (!ir_camera_session_) {
++        spdlog::warn("FaceAuth: NV12 IR capture unavailable; falling back to GREY");
++        ir_camera_session_ =
++            openCameraSession(*face_config_.anti_spoofing.ir_camera, CameraCaptureFormat::V4L2Grey,
++                              ir.warmup_frames, ir.capture_timeout_ms, ir.poll_interval_ms);
++      }
++    }
+   }
+ }
+ 
+@@ -47,11 +67,11 @@ void FaceAuth::endAuthenticationSession() {
+ AuthResult FaceAuth::authenticate(const std::string& username, const AuthConfig& config,
+                                   std::atomic<bool>* cancel_signal) {
+   if (!camera_session_) {
+-    camera_session_ = openCameraSession(std::nullopt);
++    camera_session_ = openCameraSession(face_config_.camera_device);
+   }
+   if (!camera_session_ || !camera_session_->isOpen()) {
+     spdlog::error("FaceAuth: Could not open camera");
+-    if (!checkCameraAvailability(std::nullopt)) {
++    if (!checkCameraAvailability(face_config_.camera_device)) {
+       return AuthResult::Unavailable;
+     }
+     return AuthResult::Retry;
+@@ -113,15 +133,37 @@ AuthResult FaceAuth::authenticate(const std::string& username, const AuthConfig&
+ 
+   ImageRGB face = detectedImages[0].image;
+ 
++  // Check if IR anti-spoofing is needed
+   if (face_config_.anti_spoofing.ir_camera.has_value() &&
+       !face_config_.anti_spoofing.ir_camera->empty() &&
+       (!ir_camera_session_ || !ir_camera_session_->isOpen())) {
+-    ir_camera_session_ =
+-        openCameraSession(*face_config_.anti_spoofing.ir_camera, CameraCaptureFormat::V4L2Grey,
+-                          kIrCaptureWarmupFrames, kIrCaptureTimeoutMs, kIrCapturePollIntervalMs);
++    // Reuse primary session if same device, otherwise open new session
++    if (face_config_.camera_device.has_value() &&
++        *face_config_.camera_device == *face_config_.anti_spoofing.ir_camera) {
++      spdlog::debug("FaceAuth: Reusing primary camera session for IR anti-spoofing");
++      ir_camera_session_ = nullptr;
++    } else {
++      const auto& ir = irParams();
++      ir_camera_session_ =
++          openCameraSession(*face_config_.anti_spoofing.ir_camera, CameraCaptureFormat::V4L2NV12,
++                            ir.warmup_frames, ir.capture_timeout_ms, ir.poll_interval_ms);
++      if (!ir_camera_session_) {
++        ir_camera_session_ =
++            openCameraSession(*face_config_.anti_spoofing.ir_camera, CameraCaptureFormat::V4L2Grey,
++                              ir.warmup_frames, ir.capture_timeout_ms, ir.poll_interval_ms);
++      }
++    }
+   }
+ 
+-  if (!checkAntiSpoof(face_config_, username, face, config, ir_camera_session_.get())) {
++  auto* ir_session = ir_camera_session_.get();
++  FaceMethodConfig as_config = face_config_;
++  if (!ir_session && face_config_.camera_device.has_value() &&
++      *face_config_.camera_device == *face_config_.anti_spoofing.ir_camera) {
++    spdlog::debug("FaceAuth: Same device for camera and IR, reusing session and disabling AI anti-spoofing");
++    ir_session = camera_session_.get();
++    as_config.anti_spoofing.enable = false;
++  }
++  if (!checkAntiSpoof(as_config, username, face, config, ir_session)) {
+     spdlog::warn("FaceAuth: Anti-spoofing failed");
+     if (ir_camera_session_ && !ir_camera_session_->isOpen()) {
+       ir_camera_session_.reset();
+diff --git a/auth/face/face_auth.h b/auth/face/face_auth.h
+index 825db5d..33e3550 100644
+--- a/auth/face/face_auth.h
++++ b/auth/face/face_auth.h
+@@ -5,6 +5,7 @@
+ #include "auth_config.h"
+ #include "auth_method.h"
+ #include "camera_capture.h"
++#include "ir_camera_as.h"
+ 
+ namespace biopass {
+ 
+@@ -21,11 +22,14 @@ class FaceAuth : public IAuthMethod {
+   bool isAvailable() const override;
+   uint32_t getRetries() const override { return face_config_.retries; }
+   uint32_t getRetryDelayMs() const override { return face_config_.retry_delay; }
++  uint32_t getMaxAuthTimeMs() const override;
+   void beginAuthenticationSession() override;
+   void endAuthenticationSession() override;
+   AuthResult authenticate(const std::string &username, const AuthConfig &config,
+                           std::atomic<bool> *cancel_signal = nullptr) override;
+ 
++  const IRCaptureParams& irParams() const;
++
+  private:
+   FaceMethodConfig face_config_;
+   std::unique_ptr<ICameraCaptureSession> camera_session_;

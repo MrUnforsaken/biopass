@@ -1,0 +1,85 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0008] Fix heap corruption on GUI close + polkit-1 lockout
+
+Join the CameraPreview background thread on stop() to prevent a race with exit() that corrupts glibc unsorted bins.
+Add window close handler for explicit cleanup before Tauri drops managed state.
+Fix double-kill in start_camera_preview.
+Restore polkit-1/pkexec to ignore_services.
+
+diff --git a/app/src-tauri/src/camera.rs b/app/src-tauri/src/camera.rs
+--- a/app/src-tauri/src/camera.rs
++++ b/app/src-tauri/src/camera.rs
+@@ -10,6 +10,7 @@
+     process: Option<std::process::Child>,
+     latest_frame: Arc<Mutex<Option<Vec<u8>>>>,
+     running: Arc<AtomicBool>,
++    thread_handle: Option<std::thread::JoinHandle<()>>,
+ }
+ 
+ impl CameraPreview {
+@@ -49,7 +50,7 @@
+         let frame_ref = latest_frame.clone();
+         let running_ref = running.clone();
+ 
+-        thread::spawn(move || {
++        let handle = thread::spawn(move || {
+             let mut reader = std::io::BufReader::new(stdout);
+             let mut buf = Vec::new();
+ 
+@@ -102,6 +103,7 @@
+             process: Some(child),
+             latest_frame,
+             running,
++            thread_handle: Some(handle),
+         })
+     }
+ 
+@@ -118,6 +120,9 @@
+             let _ = child.kill();
+             let _ = child.wait();
+         }
++        if let Some(handle) = self.thread_handle.take() {
++            let _ = handle.join();
++        }
+     }
+ }
+ 
+@@ -137,8 +142,8 @@
+     state: tauri::State<'_, CameraState>,
+ ) -> Result<(), String> {
+     let mut preview = state.preview.lock().map_err(|e| e.to_string())?;
+-    if preview.is_some() {
+-        preview.as_mut().unwrap().stop();
++    if let Some(mut old) = preview.take() {
++        old.stop();
+     }
+     *preview = Some(CameraPreview::start(&device_path)?);
+     Ok(())
+diff --git a/app/src-tauri/src/lib.rs b/app/src-tauri/src/lib.rs
+--- a/app/src-tauri/src/lib.rs
++++ b/app/src-tauri/src/lib.rs
+@@ -48,6 +48,23 @@
+                 }
+             }
+ 
++            // Stop camera preview explicitly when window closes,
++            // ensuring background thread is joined before managed state drops.
++            if let Some(window) = app.get_webview_window("main") {
++                let app_handle = app.handle().clone();
++                window.on_window_event(move |event| {
++                    if let tauri::WindowEvent::Destroyed = event {
++                        if let Some(state) = app_handle.try_state::<CameraState>() {
++                            if let Ok(mut preview) = state.preview.lock() {
++                                if let Some(mut p) = preview.take() {
++                                    p.stop();
++                                }
++                            }
++                        }
++                    }
++                });
++            }
++
+             Ok(())
+         })
+         .invoke_handler(tauri::generate_handler![

@@ -1,0 +1,19 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0007] Fix AI anti-spoofing class ordering
+
+The anti-spoof-mn3 model defines class 0 = real, class 1 = spoof.
+The code had the check inverted (spoof_cls == 0), causing a hand to be accepted as real.
+Fix to spoof_cls == 1.
+
+diff --git a/auth/face/antispoofing/face_as.cc b/auth/face/antispoofing/face_as.cc
+index 151e246..98d0af6 100644
+--- a/auth/face/antispoofing/face_as.cc
++++ b/auth/face/antispoofing/face_as.cc
+@@ -71,5 +71,5 @@ SpoofResult FaceAntiSpoofing::inference(const ImageRGB& image) {
+ 
+   int spoof_cls = argmax(logits, 2);
+   float score = logits[spoof_cls];
+-  return SpoofResult(score, spoof_cls == 0 && score >= this->threshold);
++  return SpoofResult(score, spoof_cls == 1 && score >= this->threshold);
+ }

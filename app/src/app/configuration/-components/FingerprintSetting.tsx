@@ -26,6 +26,8 @@ export function FingerprintSetting() {
   const [username, setUsername] = useState<string>("");
 
   useEffect(() => {
+    if (!config?.enable) return;
+
     let canceled = false;
 
     const fetchUsername = async () => {
@@ -68,7 +70,7 @@ export function FingerprintSetting() {
     return () => {
       canceled = true;
     };
-  }, [setFingerprintConfig]);
+  }, [config?.enable, setFingerprintConfig]);
 
   const fingerOptions = [
     "left-thumb",

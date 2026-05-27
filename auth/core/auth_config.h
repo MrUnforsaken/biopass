@@ -5,8 +5,8 @@
 #include <sys/types.h>
 
 #include <algorithm>
-#include <cstdint>
 #include <cerrno>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -48,6 +48,64 @@ struct AntiSpoofingConfig {
   std::optional<std::string> ir_camera = std::nullopt;
 };
 
+// ---------------------------------------------------------------------------
+// Advanced / expert config (optional section under methods.face.advanced)
+// ---------------------------------------------------------------------------
+
+struct UnsharpMaskConfig {
+  bool enable = true;
+  float amount = 5.0f;
+};
+
+struct IRCaptureConfig {
+  int warmup_frames = 3;
+  int capture_timeout_ms = 5000;
+  int poll_interval_ms = 33;
+  int max_attempts = 2;
+  int agc_sleep_ms = 500;
+  int camera_warmup_ms = 0;
+};
+
+struct CaptureConfig {
+  int width = 640;
+  int height = 480;
+  int preview_fps = 3;
+};
+
+struct DetectionAdvancedConfig {
+  int input_size = 640;
+  float nms_iou_threshold = 0.50f;
+};
+
+struct AntiSpoofingAdvancedConfig {
+  int spoof_class = 1;
+  std::string combinational_mode = "all";  // "all" | "any"
+  std::string debug_save_path = "";
+};
+
+struct EnrollmentConfig {
+  int capture_count = 1;
+};
+
+struct RecognitionAdvancedConfig {
+  std::string gallery_path = "";
+};
+
+struct AuthAdvancedConfig {
+  int max_time_ms = 0;  // 0 = compute from retries * retry_delay
+};
+
+struct AdvancedConfig {
+  UnsharpMaskConfig unsharp_mask;
+  IRCaptureConfig ir_capture;
+  CaptureConfig capture;
+  DetectionAdvancedConfig detection;
+  AntiSpoofingAdvancedConfig anti_spoofing;
+  EnrollmentConfig enrollment;
+  RecognitionAdvancedConfig recognition;
+  AuthAdvancedConfig auth;
+};
+
 struct FaceMethodConfig {
   bool enable = true;
   uint32_t retries = 5;
@@ -55,6 +113,8 @@ struct FaceMethodConfig {
   DetectionConfig detection;
   RecognitionConfig recognition;
   AntiSpoofingConfig anti_spoofing;
+  std::optional<std::string> camera_device = std::nullopt;
+  AdvancedConfig advanced;
 };
 
 struct FingerConfig {
@@ -93,13 +153,13 @@ struct BiopassConfig {
   std::vector<ModelConfig> models = {};
   std::string appearance = "system";
 };
-std::string getConfigPath(const std::string &username);
-BiopassConfig readConfig(const std::string &username);
-bool configExists(const std::string &username);
-bool migrateConfigSchema(const std::string &username, std::string *error = nullptr);
+std::string getConfigPath(const std::string& username);
+BiopassConfig readConfig(const std::string& username);
+bool configExists(const std::string& username);
+bool migrateConfigSchema(const std::string& username, std::string* error = nullptr);
 
-std::vector<std::string> listFaces(const std::string &username);
-std::string getDebugPath(const std::string &username);
-int setupConfig(const std::string &username);
+std::vector<std::string> listFaces(const std::string& username);
+std::string getDebugPath(const std::string& username);
+int setupConfig(const std::string& username);
 
 }  // namespace biopass

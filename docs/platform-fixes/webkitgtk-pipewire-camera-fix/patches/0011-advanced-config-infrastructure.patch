@@ -1,0 +1,486 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0011] Add advanced/expert config infrastructure
+
+Add all C++ structs, YAML parsing, Rust serde structs, and TypeScript interfaces for the advanced/expert settings section under methods.face.advanced.
+
+Section structure:
+  unsharp_mask: {enable, amount}
+  ir_capture:   {warmup_frames, capture_timeout_ms, poll_interval_ms, max_attempts, agc_sleep_ms, camera_warmup_ms}
+  capture:      {width, height, preview_fps}
+  detection:    {input_size, nms_iou_threshold}
+  anti_spoofing: {spoof_class, combinational_mode, debug_save_path}
+  enrollment:   {capture_count}
+  recognition:  {gallery_path}
+  auth:         {max_time_ms}
+
+Also adds getMaxAuthTimeMs() virtual to IAuthMethod.
+
+diff --git a/app/src-tauri/src/config.rs b/app/src-tauri/src/config.rs
+index c3da51c..07fe239 100644
+--- a/app/src-tauri/src/config.rs
++++ b/app/src-tauri/src/config.rs
+@@ -30,6 +30,155 @@ pub struct MethodsConfig {
+     pub fingerprint: FingerprintMethodConfig,
+ }
+ 
++#[derive(Debug, Serialize, Deserialize, Clone)]
++pub struct UnsharpMaskConfig {
++    #[serde(default = "default_unsharp_enable")]
++    pub enable: bool,
++    #[serde(default = "default_unsharp_amount")]
++    pub amount: f32,
++}
++
++fn default_unsharp_enable() -> bool { true }
++fn default_unsharp_amount() -> f32 { 5.0 }
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++pub struct IRCaptureConfig {
++    #[serde(default = "default_ir_warmup")]
++    pub warmup_frames: i32,
++    #[serde(default = "default_ir_timeout")]
++    pub capture_timeout_ms: i32,
++    #[serde(default = "default_ir_poll")]
++    pub poll_interval_ms: i32,
++    #[serde(default = "default_ir_attempts")]
++    pub max_attempts: i32,
++    #[serde(default = "default_ir_agc_sleep")]
++    pub agc_sleep_ms: i32,
++    #[serde(default = "default_ir_warmup_ms")]
++    pub camera_warmup_ms: i32,
++}
++
++fn default_ir_warmup() -> i32 { 3 }
++fn default_ir_timeout() -> i32 { 5000 }
++fn default_ir_poll() -> i32 { 33 }
++fn default_ir_attempts() -> i32 { 2 }
++fn default_ir_agc_sleep() -> i32 { 500 }
++fn default_ir_warmup_ms() -> i32 { 0 }
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++pub struct CaptureAdvancedConfig {
++    #[serde(default = "default_capture_width")]
++    pub width: i32,
++    #[serde(default = "default_capture_height")]
++    pub height: i32,
++    #[serde(default = "default_preview_fps")]
++    pub preview_fps: i32,
++}
++
++fn default_capture_width() -> i32 { 640 }
++fn default_capture_height() -> i32 { 480 }
++fn default_preview_fps() -> i32 { 3 }
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++pub struct DetectionAdvancedConfig {
++    #[serde(default = "default_det_input_size")]
++    pub input_size: i32,
++    #[serde(default = "default_det_nms_iou")]
++    pub nms_iou_threshold: f32,
++}
++
++fn default_det_input_size() -> i32 { 640 }
++fn default_det_nms_iou() -> f32 { 0.50 }
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++pub struct AntiSpoofingAdvancedConfig {
++    #[serde(default = "default_as_spoof_class")]
++    pub spoof_class: i32,
++    #[serde(default = "default_as_combinational")]
++    pub combinational_mode: String,
++    #[serde(default)]
++    pub debug_save_path: String,
++}
++
++fn default_as_spoof_class() -> i32 { 1 }
++fn default_as_combinational() -> String { "all".to_string() }
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++pub struct EnrollmentAdvancedConfig {
++    #[serde(default = "default_enrollment_capture_count")]
++    pub capture_count: i32,
++}
++
++fn default_enrollment_capture_count() -> i32 { 1 }
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++pub struct RecognitionAdvancedConfig {
++    #[serde(default)]
++    pub gallery_path: String,
++}
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++pub struct AuthAdvancedConfig {
++    #[serde(default)]
++    pub max_time_ms: i32,
++}
++
++#[derive(Debug, Serialize, Deserialize, Clone)]
++pub struct AdvancedConfig {
++    #[serde(default)]
++    pub unsharp_mask: UnsharpMaskConfig,
++    #[serde(default)]
++    pub ir_capture: IRCaptureConfig,
++    #[serde(default)]
++    pub capture: CaptureAdvancedConfig,
++    #[serde(default)]
++    pub detection: DetectionAdvancedConfig,
++    #[serde(default)]
++    pub anti_spoofing: AntiSpoofingAdvancedConfig,
++    #[serde(default)]
++    pub enrollment: EnrollmentAdvancedConfig,
++    #[serde(default)]
++    pub recognition: RecognitionAdvancedConfig,
++    #[serde(default)]
++    pub auth: AuthAdvancedConfig,
++}
++
++impl Default for UnsharpMaskConfig {
++    fn default() -> Self { Self { enable: true, amount: 5.0 } }
++}
++impl Default for IRCaptureConfig {
++    fn default() -> Self { Self { warmup_frames: 3, capture_timeout_ms: 5000, poll_interval_ms: 33, max_attempts: 2, agc_sleep_ms: 500, camera_warmup_ms: 0 } }
++}
++impl Default for CaptureAdvancedConfig {
++    fn default() -> Self { Self { width: 640, height: 480, preview_fps: 3 } }
++}
++impl Default for DetectionAdvancedConfig {
++    fn default() -> Self { Self { input_size: 640, nms_iou_threshold: 0.50 } }
++}
++impl Default for AntiSpoofingAdvancedConfig {
++    fn default() -> Self { Self { spoof_class: 1, combinational_mode: "all".to_string(), debug_save_path: "".to_string() } }
++}
++impl Default for EnrollmentAdvancedConfig {
++    fn default() -> Self { Self { capture_count: 1 } }
++}
++impl Default for RecognitionAdvancedConfig {
++    fn default() -> Self { Self { gallery_path: "".to_string() } }
++}
++impl Default for AuthAdvancedConfig {
++    fn default() -> Self { Self { max_time_ms: 0 } }
++}
++impl Default for AdvancedConfig {
++    fn default() -> Self { Self {
++        unsharp_mask: Default::default(),
++        ir_capture: Default::default(),
++        capture: Default::default(),
++        detection: Default::default(),
++        anti_spoofing: Default::default(),
++        enrollment: Default::default(),
++        recognition: Default::default(),
++        auth: Default::default(),
++    }}
++}
++
+ #[derive(Debug, Serialize, Clone)]
+ pub struct FaceMethodConfig {
+     pub enable: bool,
+@@ -38,6 +187,10 @@ pub struct FaceMethodConfig {
+     pub detection: DetectionConfig,
+     pub recognition: RecognitionConfig,
+     pub anti_spoofing: AntiSpoofingConfig,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub camera_device: Option<String>,
++    #[serde(default)]
++    pub advanced: AdvancedConfig,
+ }
+ 
+ #[derive(Debug, Deserialize, Default)]
+@@ -75,7 +228,11 @@ struct FaceMethodConfigRaw {
+     #[serde(default)]
+     pub anti_spoofing: AntiSpoofingConfigRaw,
+     #[serde(default)]
++    pub camera_device: Option<String>,
++    #[serde(default)]
+     pub ir_camera: Option<LegacyIRCameraConfig>,
++    #[serde(default)]
++    pub advanced: AdvancedConfig,
+ }
+ 
+ impl<'de> Deserialize<'de> for FaceMethodConfig {
+@@ -102,6 +259,8 @@ impl<'de> Deserialize<'de> for FaceMethodConfig {
+             detection: raw.detection,
+             recognition: raw.recognition,
+             anti_spoofing,
++            camera_device: raw.camera_device,
++            advanced: raw.advanced,
+         })
+     }
+ }
+@@ -278,6 +437,8 @@ fn get_default_config(app: &AppHandle) -> BiopassConfig {
+                     },
+                     ir_camera: None,
+                 },
++                camera_device: None,
++                advanced: AdvancedConfig::default(),
+             },
+             fingerprint: FingerprintMethodConfig {
+                 enable: false,
+diff --git a/app/src/types/config.ts b/app/src/types/config.ts
+index 2fa71a7..5a71f31 100644
+--- a/app/src/types/config.ts
++++ b/app/src/types/config.ts
+@@ -23,6 +23,60 @@ export interface VideoDeviceInfo {
+   display_name: string;
+ }
+ 
++export interface UnsharpMaskConfig {
++  enable: boolean;
++  amount: number;
++}
++
++export interface IRCaptureConfig {
++  warmup_frames: number;
++  capture_timeout_ms: number;
++  poll_interval_ms: number;
++  max_attempts: number;
++  agc_sleep_ms: number;
++  camera_warmup_ms: number;
++}
++
++export interface CaptureAdvancedConfig {
++  width: number;
++  height: number;
++  preview_fps: number;
++}
++
++export interface DetectionAdvancedConfig {
++  input_size: number;
++  nms_iou_threshold: number;
++}
++
++export interface AntiSpoofingAdvancedConfig {
++  spoof_class: number;
++  combinational_mode: "all" | "any";
++  debug_save_path: string;
++}
++
++export interface EnrollmentAdvancedConfig {
++  capture_count: number;
++}
++
++export interface RecognitionAdvancedConfig {
++  gallery_path: string;
++}
++
++export interface AuthAdvancedConfig {
++  max_time_ms: number;
++}
++
++export interface AdvancedConfig {
++  unsharp_mask: UnsharpMaskConfig;
++  ir_capture: IRCaptureConfig;
++  capture: CaptureAdvancedConfig;
++  detection: DetectionAdvancedConfig;
++  anti_spoofing: AntiSpoofingAdvancedConfig;
++  enrollment: EnrollmentAdvancedConfig;
++  recognition: RecognitionAdvancedConfig;
++  auth: AuthAdvancedConfig;
++}
++
+ export interface FaceMethodConfig {
+   enable: boolean;
+   retries: number;
+@@ -43,6 +97,8 @@ export interface FaceMethodConfig {
+     };
+     ir_camera: string | null;
+   };
++  camera_device: string | null;
++  advanced: AdvancedConfig;
+ }
+ 
+ export interface FingerprintMethodConfig {
+diff --git a/auth/core/auth_config.cc b/auth/core/auth_config.cc
+index 421dbb2..9db78ff 100644
+--- a/auth/core/auth_config.cc
++++ b/auth/core/auth_config.cc
+@@ -121,6 +121,10 @@ BiopassConfig readConfig(const std::string& username) {
+           if (f["recognition"]["threshold"])
+             config.methods.face.recognition.threshold = f["recognition"]["threshold"].as<float>();
+         }
++        if (f["camera_device"] && !f["camera_device"].IsNull()) {
++          config.methods.face.camera_device = f["camera_device"].as<std::string>();
++        }
++
+         if (f["anti_spoofing"]) {
+           const auto& anti_spoofing = f["anti_spoofing"];
+           if (anti_spoofing["enable"]) {
+@@ -153,6 +157,87 @@ BiopassConfig readConfig(const std::string& username) {
+           }
+         }
+ 
++        // Advanced / expert tuning
++        if (f["advanced"]) {
++          const auto& adv = f["advanced"];
++
++          // Unsharp mask
++          if (adv["unsharp_mask"]) {
++            const auto& us = adv["unsharp_mask"];
++            if (us["enable"])
++              config.methods.face.advanced.unsharp_mask.enable = us["enable"].as<bool>();
++            if (us["amount"])
++              config.methods.face.advanced.unsharp_mask.amount = us["amount"].as<float>();
++          }
++
++          // IR capture
++          if (adv["ir_capture"]) {
++            const auto& ir = adv["ir_capture"];
++            if (ir["warmup_frames"])
++              config.methods.face.advanced.ir_capture.warmup_frames = ir["warmup_frames"].as<int>();
++            if (ir["capture_timeout_ms"])
++              config.methods.face.advanced.ir_capture.capture_timeout_ms = ir["capture_timeout_ms"].as<int>();
++            if (ir["poll_interval_ms"])
++              config.methods.face.advanced.ir_capture.poll_interval_ms = ir["poll_interval_ms"].as<int>();
++            if (ir["max_attempts"])
++              config.methods.face.advanced.ir_capture.max_attempts = ir["max_attempts"].as<int>();
++            if (ir["agc_sleep_ms"])
++              config.methods.face.advanced.ir_capture.agc_sleep_ms = ir["agc_sleep_ms"].as<int>();
++            if (ir["camera_warmup_ms"])
++              config.methods.face.advanced.ir_capture.camera_warmup_ms = ir["camera_warmup_ms"].as<int>();
++          }
++
++          // Capture
++          if (adv["capture"]) {
++            const auto& cap = adv["capture"];
++            if (cap["width"])
++              config.methods.face.advanced.capture.width = cap["width"].as<int>();
++            if (cap["height"])
++              config.methods.face.advanced.capture.height = cap["height"].as<int>();
++          }
++
++          // Detection
++          if (adv["detection"]) {
++            const auto& det = adv["detection"];
++            if (det["input_size"])
++              config.methods.face.advanced.detection.input_size = det["input_size"].as<int>();
++            if (det["nms_iou_threshold"])
++              config.methods.face.advanced.detection.nms_iou_threshold = det["nms_iou_threshold"].as<float>();
++          }
++
++          // Anti-spoofing
++          if (adv["anti_spoofing"]) {
++            const auto& as_adv = adv["anti_spoofing"];
++            if (as_adv["spoof_class"])
++              config.methods.face.advanced.anti_spoofing.spoof_class = as_adv["spoof_class"].as<int>();
++            if (as_adv["combinational_mode"])
++              config.methods.face.advanced.anti_spoofing.combinational_mode = as_adv["combinational_mode"].as<std::string>();
++            if (as_adv["debug_save_path"])
++              config.methods.face.advanced.anti_spoofing.debug_save_path = as_adv["debug_save_path"].as<std::string>();
++          }
++
++          // Enrollment
++          if (adv["enrollment"]) {
++            const auto& enr = adv["enrollment"];
++            if (enr["capture_count"])
++              config.methods.face.advanced.enrollment.capture_count = enr["capture_count"].as<int>();
++          }
++
++          // Recognition
++          if (adv["recognition"]) {
++            const auto& rec = adv["recognition"];
++            if (rec["gallery_path"])
++              config.methods.face.advanced.recognition.gallery_path = rec["gallery_path"].as<std::string>();
++          }
++
++          // Auth
++          if (adv["auth"]) {
++            const auto& a = adv["auth"];
++            if (a["max_time_ms"])
++              config.methods.face.advanced.auth.max_time_ms = a["max_time_ms"].as<int>();
++          }
++        }
++
+         // Backward compatibility with old schema:
+         // methods.face.ir_camera.enable + methods.face.ir_camera.device_id
+         const bool ir_camera_missing = !config.methods.face.anti_spoofing.ir_camera.has_value() ||
+diff --git a/auth/core/auth_config.h b/auth/core/auth_config.h
+index 932979c..7621aec 100644
+--- a/auth/core/auth_config.h
++++ b/auth/core/auth_config.h
+@@ -48,6 +48,64 @@ struct AntiSpoofingConfig {
+   std::optional<std::string> ir_camera = std::nullopt;
+ };
+ 
++// ---------------------------------------------------------------------------
++// Advanced / expert config (optional section under methods.face.advanced)
++// ---------------------------------------------------------------------------
++
++struct UnsharpMaskConfig {
++  bool enable = true;
++  float amount = 5.0f;
++};
++
++struct IRCaptureConfig {
++  int warmup_frames = 3;
++  int capture_timeout_ms = 5000;
++  int poll_interval_ms = 33;
++  int max_attempts = 2;
++  int agc_sleep_ms = 500;
++  int camera_warmup_ms = 0;
++};
++
++struct CaptureConfig {
++  int width = 640;
++  int height = 480;
++  int preview_fps = 3;
++};
++
++struct DetectionAdvancedConfig {
++  int input_size = 640;
++  float nms_iou_threshold = 0.50f;
++};
++
++struct AntiSpoofingAdvancedConfig {
++  int spoof_class = 1;
++  std::string combinational_mode = "all";  // "all" | "any"
++  std::string debug_save_path = "";
++};
++
++struct EnrollmentConfig {
++  int capture_count = 1;
++};
++
++struct RecognitionAdvancedConfig {
++  std::string gallery_path = "";
++};
++
++struct AuthAdvancedConfig {
++  int max_time_ms = 0;  // 0 = compute from retries * retry_delay
++};
++
++struct AdvancedConfig {
++  UnsharpMaskConfig unsharp_mask;
++  IRCaptureConfig ir_capture;
++  CaptureConfig capture;
++  DetectionAdvancedConfig detection;
++  AntiSpoofingAdvancedConfig anti_spoofing;
++  EnrollmentConfig enrollment;
++  RecognitionAdvancedConfig recognition;
++  AuthAdvancedConfig auth;
++};
++
+ struct FaceMethodConfig {
+   bool enable = true;
+   uint32_t retries = 5;
+@@ -55,6 +113,8 @@ struct FaceMethodConfig {
+   DetectionConfig detection;
+   RecognitionConfig recognition;
+   AntiSpoofingConfig anti_spoofing;
++  std::optional<std::string> camera_device = std::nullopt;
++  AdvancedConfig advanced;
+ };
+ 
+ struct FingerConfig {
+diff --git a/auth/core/auth_method.h b/auth/core/auth_method.h
+index 6cf54ca..8b76991 100644
+--- a/auth/core/auth_method.h
++++ b/auth/core/auth_method.h
+@@ -20,6 +20,7 @@ struct IAuthMethod {
+   virtual bool isAvailable() const = 0;
+   virtual uint32_t getRetries() const = 0;
+   virtual uint32_t getRetryDelayMs() const = 0;
++  virtual uint32_t getMaxAuthTimeMs() const { return 0; }
+   virtual void beginAuthenticationSession() {}
+   virtual void endAuthenticationSession() {}
+   virtual AuthResult authenticate(const std::string& username, const AuthConfig& config,

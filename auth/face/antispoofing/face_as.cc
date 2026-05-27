@@ -12,10 +12,13 @@ int argmax(const float* data, int size) {
   return max_index;
 }
 
-FaceAntiSpoofing::FaceAntiSpoofing(const std::string& ckpt, int imgsz, const float threshold) {
+FaceAntiSpoofing::FaceAntiSpoofing(const std::string& ckpt, int imgsz, const float threshold,
+                                   int spoof_class_index, const UnsharpMaskParams& unsharp) {
   this->ckpt = ckpt;
   this->imgsz = imgsz;
   this->threshold = threshold;
+  this->spoof_class_index_ = spoof_class_index;
+  this->unsharp_params_ = unsharp;
   this->loadModel(ckpt);
 }
 
@@ -41,17 +44,18 @@ void FaceAntiSpoofing::loadModel(const std::string& ckpt) {
     auto name = this->session->GetOutputNameAllocated(i, this->allocator);
     this->output_names_str.push_back(name.get());
   }
-  for (auto& s : this->input_names_str)
-    this->input_names_cstr.push_back(s.c_str());
-  for (auto& s : this->output_names_str)
-    this->output_names_cstr.push_back(s.c_str());
+  for (auto& s : this->input_names_str) this->input_names_cstr.push_back(s.c_str());
+  for (auto& s : this->output_names_str) this->output_names_cstr.push_back(s.c_str());
 }
 
 std::vector<float> FaceAntiSpoofing::preprocess(const ImageRGB& input_image) {
   const float mean[3] = {0.5931f, 0.4690f, 0.4229f};
   const float std[3] = {0.2471f, 0.2214f, 0.2157f};
   ImageRGB resize_img = resizeImage(input_image, this->imgsz, this->imgsz);
-
+  if (this->unsharp_params_.enable) {
+    ImageRGB sharpened = sharpenImage(resize_img, this->unsharp_params_.amount);
+    return imageToChwNormalized(sharpened, mean, std);
+  }
   return imageToChwNormalized(resize_img, mean, std);
 }
 
@@ -71,5 +75,5 @@ SpoofResult FaceAntiSpoofing::inference(const ImageRGB& image) {
 
   int spoof_cls = argmax(logits, 2);
   float score = logits[spoof_cls];
-  return SpoofResult(score, spoof_cls == 0 && score >= this->threshold);
+  return SpoofResult(score, spoof_cls == this->spoof_class_index_ && score >= this->threshold);
 }

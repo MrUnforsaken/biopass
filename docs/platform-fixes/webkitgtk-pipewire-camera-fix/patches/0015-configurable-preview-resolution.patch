@@ -1,0 +1,209 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0015] Wire configurable preview resolution from advanced config
+
+Connect Capture Resolution fields (width/height) from advanced config to ffmpeg camera preview.
+CameraPreview::start() now takes width/height params.
+start_camera_preview and capture_camera_frame accept optional width/height with 640x480 defaults.
+FaceSetting reads config.advanced.capture.width/height and passes to FaceCapture.
+
+diff --git a/app/src-tauri/src/camera.rs b/app/src-tauri/src/camera.rs
+index 1980e26..c16c838 100644
+--- a/app/src-tauri/src/camera.rs
++++ b/app/src-tauri/src/camera.rs
+@@ -9,26 +9,27 @@ use std::time::Duration;
+ pub struct CameraPreview {
+     process: Option<std::process::Child>,
+     latest_frame: Arc<Mutex<Option<Vec<u8>>>>,
+     running: Arc<AtomicBool>,
+     thread_handle: Option<std::thread::JoinHandle<()>>,
+ }
+ 
+ impl CameraPreview {
+-    pub fn start(device_path: &str) -> Result<Self, String> {
++    pub fn start(device_path: &str, width: u32, height: u32) -> Result<Self, String> {
++        let video_size = format!("{}x{}", width, height);
+         let mut child = Command::new("ffmpeg")
+             .args([
+                 "-hide_banner",
+                 "-loglevel",
+                 "quiet",
+                 "-f",
+                 "v4l2",
+                 "-video_size",
+-                "640x480",
++                &video_size,
+                 "-i",
+                 device_path,
+                 "-c:v",
+                 "mjpeg",
+                 "-q:v",
+                 "5",
+                 "-f",
+                 "image2pipe",
+@@ -135,22 +136,26 @@ impl Drop for CameraPreview {
+ pub struct CameraState {
+     pub preview: Mutex<Option<CameraPreview>>,
+ }
+ 
+ #[tauri::command]
+ pub fn start_camera_preview(
+     device_path: String,
+     state: tauri::State<'_, CameraState>,
++    width: Option<i32>,
++    height: Option<i32>,
+ ) -> Result<(), String> {
++    let w = width.unwrap_or(640).max(1) as u32;
++    let h = height.unwrap_or(480).max(1) as u32;
+     let mut preview = state.preview.lock().map_err(|e| e.to_string())?;
+     if let Some(mut old) = preview.take() {
+         old.stop();
+     }
+-    *preview = Some(CameraPreview::start(&device_path)?);
++    *preview = Some(CameraPreview::start(&device_path, w, h)?);
+     Ok(())
+ }
+ 
+ #[tauri::command]
+ pub fn get_preview_frame(state: tauri::State<'_, CameraState>) -> Result<Option<String>, String> {
+     let preview = state.preview.lock().map_err(|e| e.to_string())?;
+     Ok(preview.as_ref().and_then(|p| p.get_frame_base64()))
+ }
+@@ -160,26 +165,29 @@ pub fn stop_camera_preview(state: tauri::State<'_, CameraState>) -> Result<(), S
+     let mut preview = state.preview.lock().map_err(|e| e.to_string())?;
+     if let Some(mut p) = preview.take() {
+         p.stop();
+     }
+     Ok(())
+ }
+ 
+ #[tauri::command]
+-pub fn capture_camera_frame(device_path: String) -> Result<String, String> {
++pub fn capture_camera_frame(device_path: String, width: Option<i32>, height: Option<i32>) -> Result<String, String> {
++    let w = width.unwrap_or(640).max(1);
++    let h = height.unwrap_or(480).max(1);
++    let video_size = format!("{}x{}", w, h);
+     let output = Command::new("ffmpeg")
+         .args([
+             "-hide_banner",
+             "-loglevel",
+             "quiet",
+             "-f",
+             "v4l2",
+             "-video_size",
+-            "640x480",
++            &video_size,
+             "-i",
+             &device_path,
+             "-frames:v",
+             "1",
+             "-c:v",
+             "mjpeg",
+             "-q:v",
+             "5",
+diff --git a/app/src/app/configuration/-components/face/FaceCapture.tsx b/app/src/app/configuration/-components/face/FaceCapture.tsx
+index 2baf193..76e689c 100644
+--- a/app/src/app/configuration/-components/face/FaceCapture.tsx
++++ b/app/src/app/configuration/-components/face/FaceCapture.tsx
+@@ -18,20 +18,22 @@ const FPS_OPTIONS = [
+   { label: "30 FPS", interval: 33, fps: 30 },
+ ] as const;
+ 
+ function fpsToIndex(fps: number): number {
+   const idx = FPS_OPTIONS.findIndex((o) => o.fps === fps);
+   return idx >= 0 ? idx : 0;
+ }
+ 
+-export function FaceCapture({ selectedDevicePath, previewFps, onPreviewFpsChange }: {
++export function FaceCapture({ selectedDevicePath, previewFps, onPreviewFpsChange, captureWidth, captureHeight }: {
+   selectedDevicePath?: string;
+   previewFps?: number;
+   onPreviewFpsChange?: (fps: number) => void;
++  captureWidth?: number;
++  captureHeight?: number;
+ }) {
+   const nativeImgRef = useRef<HTMLImageElement>(null);
+   const pollingRef = useRef<number | null>(null);
+   const [capturing, setCapturing] = useState(false);
+   const [faceImages, setFaceImages] = useState<string[]>([]);
+   const [nativeFrame, setNativeFrame] = useState<string | null>(null);
+   const [fpsIndex, setFpsIndex] = useState(fpsToIndex(previewFps ?? 3));
+   const capturedFrameRef = useRef<string | null>(null);
+@@ -84,17 +86,17 @@ export function FaceCapture({ selectedDevicePath, previewFps, onPreviewFpsChange
+       let device = selectedDevicePath;
+       if (!device) {
+         const devices = await cmd.face.listVideoDevices();
+         const target = devices.find(
+           (d) => !d.name.toLowerCase().includes("metadata"),
+         );
+         device = target?.path ?? "/dev/video0";
+       }
+-      await cmd.face.startCameraPreview(device);
++      await cmd.face.startCameraPreview(device, captureWidth, captureHeight);
+       pollFrames();
+       setCapturing(true);
+     } catch (err) {
+       toast.error("Failed to access camera");
+       console.error(err);
+     }
+   }
+ 
+diff --git a/app/src/app/configuration/-components/face/FaceSetting.tsx b/app/src/app/configuration/-components/face/FaceSetting.tsx
+index ea8488c..72caff0 100644
+--- a/app/src/app/configuration/-components/face/FaceSetting.tsx
++++ b/app/src/app/configuration/-components/face/FaceSetting.tsx
+@@ -149,16 +149,18 @@ export function FaceSetting() {
+             ))}
+           </SelectContent>
+         </Select>
+       </div>
+ 
+       <FaceCapture
+         selectedDevicePath={selectedCameraDevice?.path}
+         previewFps={config.advanced.capture.preview_fps}
++        captureWidth={config.advanced.capture.width}
++        captureHeight={config.advanced.capture.height}
+         onPreviewFpsChange={(fps) =>
+           setAdvancedField("capture", {
+             ...config.advanced.capture,
+             preview_fps: fps,
+           })
+         }
+       />
+ 
+diff --git a/app/src/commands/face.ts b/app/src/commands/face.ts
+index 1d9c42f..86d61a3 100644
+--- a/app/src/commands/face.ts
++++ b/app/src/commands/face.ts
+@@ -12,25 +12,29 @@ function saveImage(data: string) {
+ function deleteImage(path: string) {
+   return invokeCommand<void>("delete_face", { path });
+ }
+ 
+ function listVideoDevices() {
+   return invokeCommand<VideoDeviceInfo[]>("list_video_devices");
+ }
+ 
+-function captureCameraFrame(devicePath: string) {
++function captureCameraFrame(devicePath: string, width?: number, height?: number) {
+   return invokeCommand<string>("capture_camera_frame", {
+     devicePath,
++    width,
++    height,
+   });
+ }
+ 
+-function startCameraPreview(devicePath: string) {
++function startCameraPreview(devicePath: string, width?: number, height?: number) {
+   return invokeCommand<void>("start_camera_preview", {
+     devicePath,
++    width,
++    height,
+   });
+ }
+ 
+ function getPreviewFrame() {
+   return invokeCommand<string | null>("get_preview_frame");
+ }
+ 
+ function stopCameraPreview() {

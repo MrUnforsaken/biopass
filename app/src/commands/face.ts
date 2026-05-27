@@ -17,9 +17,37 @@ function listVideoDevices() {
   return invokeCommand<VideoDeviceInfo[]>("list_video_devices");
 }
 
+function captureCameraFrame(devicePath: string, width?: number, height?: number) {
+  return invokeCommand<string>("capture_camera_frame", {
+    devicePath,
+    width,
+    height,
+  });
+}
+
+function startCameraPreview(devicePath: string, width?: number, height?: number) {
+  return invokeCommand<void>("start_camera_preview", {
+    devicePath,
+    width,
+    height,
+  });
+}
+
+function getPreviewFrame() {
+  return invokeCommand<string | null>("get_preview_frame");
+}
+
+function stopCameraPreview() {
+  return invokeCommand<void>("stop_camera_preview");
+}
+
 export const face = {
   listImages,
   saveImage,
   deleteImage,
   listVideoDevices,
+  captureCameraFrame,
+  startCameraPreview,
+  getPreviewFrame,
+  stopCameraPreview,
 };

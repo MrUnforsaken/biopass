@@ -1,0 +1,799 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0013] Add advanced/expert settings GUI
+
+Add collapsible "Advanced Settings" section to FaceSetting.tsx with controls for all advanced config values:
+- Unsharp mask enable/disable + amount slider
+- IR capture parameters (warmup, timeout, poll, attempts, AGC sleep, cam warmup)
+- Anti-spoofing advanced (spoof class, combinational mode, debug save path)
+- Detection advanced (input size, NMS IoU threshold slider)
+- Capture resolution (width, height) + persistent preview FPS
+- Enrollment capture count
+- Recognition gallery path
+- Auth max time
+
+Persistent preview FPS: FaceCapture reads preview_fps from config and propagates changes back via onPreviewFpsChange callback.
+
+diff --git a/app/src/app/configuration/-components/face/FaceCapture.tsx b/app/src/app/configuration/-components/face/FaceCapture.tsx
+index 17c34fe..2baf193 100644
+--- a/app/src/app/configuration/-components/face/FaceCapture.tsx
++++ b/app/src/app/configuration/-components/face/FaceCapture.tsx
+@@ -1,42 +1,40 @@
+ import { convertFileSrc } from "@tauri-apps/api/core";
+-import { Camera, Circle, Square, Trash2 } from "lucide-react";
++import { Camera, Circle, Square, Trash2, AlertCircle } from "lucide-react";
+ import { useCallback, useEffect, useRef, useState } from "react";
+ import { toast } from "sonner";
+ import { cmd } from "@/commands";
+ import { Button } from "@/components/ui/button";
+-
+-function stopMediaStream(stream: MediaStream | null) {
+-  if (!stream) return;
+-
+-  for (const track of stream.getTracks()) {
+-    track.stop();
+-  }
++import {
++  Select,
++  SelectContent,
++  SelectItem,
++  SelectTrigger,
++  SelectValue,
++} from "@/components/ui/select";
++
++const FPS_OPTIONS = [
++  { label: "3 FPS", interval: 300, fps: 3 },
++  { label: "15 FPS", interval: 66, fps: 15 },
++  { label: "30 FPS", interval: 33, fps: 30 },
++] as const;
++
++function fpsToIndex(fps: number): number {
++  const idx = FPS_OPTIONS.findIndex((o) => o.fps === fps);
++  return idx >= 0 ? idx : 0;
+ }
+ 
+-async function openCamera(deviceId?: string) {
+-  const video = deviceId
+-    ? {
+-        width: 640,
+-        height: 480,
+-        deviceId: { exact: deviceId },
+-      }
+-    : {
+-        width: 640,
+-        height: 480,
+-      };
+-
+-  return navigator.mediaDevices.getUserMedia({ video });
+-}
+-
+-export function FaceCapture() {
+-  const videoRef = useRef<HTMLVideoElement>(null);
+-  const canvasRef = useRef<HTMLCanvasElement>(null);
+-  const [stream, setStream] = useState<MediaStream | null>(null);
++export function FaceCapture({ selectedDevicePath, previewFps, onPreviewFpsChange }: {
++  selectedDevicePath?: string;
++  previewFps?: number;
++  onPreviewFpsChange?: (fps: number) => void;
++}) {
++  const nativeImgRef = useRef<HTMLImageElement>(null);
++  const pollingRef = useRef<number | null>(null);
+   const [capturing, setCapturing] = useState(false);
+   const [faceImages, setFaceImages] = useState<string[]>([]);
+-  const [activeBrowserCameraLabel, setActiveBrowserCameraLabel] = useState<
+-    string | null
+-  >(null);
++  const [nativeFrame, setNativeFrame] = useState<string | null>(null);
++  const [fpsIndex, setFpsIndex] = useState(fpsToIndex(previewFps ?? 3));
++  const capturedFrameRef = useRef<string | null>(null);
+ 
+   const loadFaceImages = useCallback(async () => {
+     try {
+@@ -53,67 +51,71 @@ export function FaceCapture() {
+ 
+   useEffect(() => {
+     return () => {
+-      stopMediaStream(stream);
++      stopPolling();
++      cmd.face.stopCameraPreview().catch(() => {});
+     };
+-  }, [stream]);
+-
+-  // Attach stream to video element when stream changes
+-  useEffect(() => {
+-    if (!videoRef.current) {
+-      return;
+-    }
++  }, []);
+ 
+-    if (!stream) {
+-      videoRef.current.srcObject = null;
+-      return;
++  function stopPolling() {
++    if (pollingRef.current !== null) {
++      clearInterval(pollingRef.current);
++      pollingRef.current = null;
+     }
++  }
+ 
+-    videoRef.current.srcObject = stream;
+-    videoRef.current.play().catch(console.error);
+-  }, [stream]);
++  async function pollFrames() {
++    stopPolling();
++    const interval = FPS_OPTIONS[fpsIndex].interval;
++    pollingRef.current = window.setInterval(async () => {
++      try {
++        const frame = await cmd.face.getPreviewFrame();
++        if (frame) {
++          capturedFrameRef.current = frame;
++          setNativeFrame(`data:image/jpeg;base64,${frame}`);
++        }
++      } catch {
++        // frame read failed, will retry
++      }
++    }, interval);
++  }
+ 
+   async function startCamera() {
+-    let mediaStream: MediaStream | null = null;
+-
+     try {
+-      mediaStream = await openCamera();
+-
+-      const activeTrackLabel = mediaStream.getVideoTracks()[0]?.label?.trim();
+-
+-      stopMediaStream(stream);
+-      setStream(mediaStream);
+-      setActiveBrowserCameraLabel(activeTrackLabel || null);
++      let device = selectedDevicePath;
++      if (!device) {
++        const devices = await cmd.face.listVideoDevices();
++        const target = devices.find(
++          (d) => !d.name.toLowerCase().includes("metadata"),
++        );
++        device = target?.path ?? "/dev/video0";
++      }
++      await cmd.face.startCameraPreview(device);
++      pollFrames();
+       setCapturing(true);
+     } catch (err) {
+-      stopMediaStream(mediaStream);
+-      setActiveBrowserCameraLabel(null);
+       toast.error("Failed to access camera");
+       console.error(err);
+     }
+   }
+ 
+   function stopCamera() {
+-    stopMediaStream(stream);
+-    setStream(null);
+-    setActiveBrowserCameraLabel(null);
++    stopPolling();
+     setCapturing(false);
++    setNativeFrame(null);
++    capturedFrameRef.current = null;
++    cmd.face.stopCameraPreview().catch(() => {});
+   }
+ 
+   async function capturePhoto() {
+-    if (!videoRef.current || !canvasRef.current) return;
+-
+-    const video = videoRef.current;
+-    const canvas = canvasRef.current;
+-    canvas.width = video.videoWidth;
+-    canvas.height = video.videoHeight;
+-
+-    const ctx = canvas.getContext("2d");
+-    if (!ctx) return;
+-
+-    ctx.drawImage(video, 0, 0);
+-    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+-    const base64Data = dataUrl.split(",")[1];
++    const frame = capturedFrameRef.current;
++    if (!frame) {
++      toast.error("No frame available yet, please wait...");
++      return;
++    }
++    await saveFaceImage(frame);
++  }
+ 
++  async function saveFaceImage(base64Data: string) {
+     try {
+       await cmd.face.saveImage(base64Data);
+       toast.success("Face image saved!");
+@@ -141,24 +143,60 @@ export function FaceCapture() {
+       </h4>
+ 
+       <div className="grid gap-4">
+-        {/* Camera Preview */}
+         <div className="relative aspect-video bg-black rounded-lg overflow-hidden">
+-          <video
+-            ref={videoRef}
+-            autoPlay
+-            playsInline
+-            muted
+-            className={`w-full h-full object-cover ${capturing ? "" : "hidden"}`}
+-          />
+-          {!capturing && (
++          {nativeFrame && capturing ? (
++            <img
++              ref={nativeImgRef}
++              src={nativeFrame}
++              alt="Camera preview"
++              className="w-full h-full object-cover"
++            />
++          ) : !capturing ? (
+             <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
+               <Camera className="w-12 h-12 opacity-50" />
+             </div>
++          ) : (
++            <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
++              <div className="text-center">
++                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2" />
++                <p className="text-xs">Starting camera...</p>
++              </div>
++            </div>
+           )}
+-          <canvas ref={canvasRef} className="hidden" />
+         </div>
+ 
+-        {/* Controls */}
++        <div className="flex items-center gap-2 text-xs text-amber-500 bg-amber-500/10 p-2 rounded">
++          <AlertCircle className="w-3 h-3 shrink-0" />
++          <span className="flex-1">
++            Using native camera capture —{" "}
++            {capturing
++              ? `${FPS_OPTIONS[fpsIndex].label}`
++              : "preview not started"}
++          </span>
++          <Select
++            value={String(fpsIndex)}
++            onValueChange={(v) => {
++              const idx = Number(v);
++              setFpsIndex(idx);
++              if (onPreviewFpsChange) {
++                onPreviewFpsChange(FPS_OPTIONS[idx].fps);
++              }
++              if (capturing) pollFrames();
++            }}
++          >
++            <SelectTrigger className="h-6 text-xs w-20 border-amber-500/30">
++              <SelectValue />
++            </SelectTrigger>
++            <SelectContent>
++              {FPS_OPTIONS.map((opt, i) => (
++                <SelectItem key={i} value={String(i)}>
++                  {opt.label}
++                </SelectItem>
++              ))}
++            </SelectContent>
++          </Select>
++        </div>
++
+         <div className="flex gap-2">
+           {!capturing ? (
+             <Button onClick={startCamera} className="flex-1">
+@@ -179,15 +217,6 @@ export function FaceCapture() {
+           )}
+         </div>
+ 
+-        {capturing && (
+-          <p className="text-[10px] text-muted-foreground">
+-            {activeBrowserCameraLabel
+-              ? `Browser preview camera: ${activeBrowserCameraLabel}`
+-              : "Browser preview camera: active, but WebKit did not expose a device label."}
+-          </p>
+-        )}
+-
+-        {/* Saved Faces */}
+         {faceImages.length > 0 && (
+           <div>
+             <p className="text-sm text-muted-foreground mb-2">
+diff --git a/app/src/app/configuration/-components/face/FaceSetting.tsx b/app/src/app/configuration/-components/face/FaceSetting.tsx
+index c6933a9..34a4956 100644
+--- a/app/src/app/configuration/-components/face/FaceSetting.tsx
++++ b/app/src/app/configuration/-components/face/FaceSetting.tsx
+@@ -1,4 +1,5 @@
+ import { useEffect, useMemo, useState } from "react";
++import { ChevronDown, ChevronRight } from "lucide-react";
+ import { cmd } from "@/commands";
+ import { Input } from "@/components/ui/input";
+ import { Label } from "@/components/ui/label";
+@@ -9,7 +10,8 @@ import {
+   SelectTrigger,
+   SelectValue,
+ } from "@/components/ui/select";
+-import type { VideoDeviceInfo } from "@/types/config";
++import { Slider } from "@/components/ui/slider";
++import type { AdvancedConfig, FaceMethodConfig, VideoDeviceInfo } from "@/types/config";
+ import { useConfigurationStore } from "../../-stores/configuration-store";
+ import { ModelSelect } from "../methods/shared/ModelSelect";
+ import { Threshold } from "../methods/shared/Threshold";
+@@ -33,6 +35,13 @@ export function FaceSetting() {
+     fetchDevices();
+   }, []);
+ 
++  const selectedCameraDevice = useMemo(() => {
++    if (!config) return null;
++    const cameraDevice = config.camera_device;
++    if (!cameraDevice) return null;
++    return videoDevices.find((device) => device.path === cameraDevice) ?? null;
++  }, [config, videoDevices]);
++
+   const selectedIrCamera = useMemo(() => {
+     if (!config) return null;
+     const irCameraPath = config.anti_spoofing.ir_camera;
+@@ -44,8 +53,20 @@ export function FaceSetting() {
+     [models],
+   );
+ 
++  const [advancedOpen, setAdvancedOpen] = useState(false);
++
+   if (!config) return null;
+ 
++  const faceConfig: FaceMethodConfig = config;
++
++  function setAdvanced(adv: AdvancedConfig) {
++    setFaceConfig({ ...faceConfig, advanced: adv } as FaceMethodConfig);
++  }
++
++  function setAdvancedField<K extends keyof AdvancedConfig>(key: K, value: AdvancedConfig[K]) {
++    setAdvanced({ ...faceConfig.advanced, [key]: value });
++  }
++
+   const disabledOption = "__disabled__";
+   const unavailableAiModelOption = "__unavailable_ai_model__";
+   const unavailableIrDeviceOption = "__unavailable_ir_device__";
+@@ -111,7 +132,43 @@ export function FaceSetting() {
+         </div>
+       </div>
+ 
+-      <FaceCapture />
++      <div className="grid gap-2">
++        <Label htmlFor="camera-device" className="text-xs text-muted-foreground">
++          Camera Device
++        </Label>
++        <Select
++          value={config.camera_device ?? "__default__"}
++          onValueChange={(value) => {
++            setFaceConfig({
++              ...config,
++              camera_device: value === "__default__" ? null : value,
++            });
++          }}
++        >
++          <SelectTrigger id="camera-device" className="h-10 w-full">
++            <SelectValue placeholder="Select Camera Device" />
++          </SelectTrigger>
++          <SelectContent>
++            <SelectItem value="__default__">Default (auto)</SelectItem>
++            {videoDevices.map((device) => (
++              <SelectItem key={device.path} value={device.path}>
++                {device.display_name}
++              </SelectItem>
++            ))}
++          </SelectContent>
++        </Select>
++      </div>
++
++      <FaceCapture
++        selectedDevicePath={selectedCameraDevice?.path}
++        previewFps={config.advanced.capture.preview_fps}
++        onPreviewFpsChange={(fps) =>
++          setAdvancedField("capture", {
++            ...config.advanced.capture,
++            preview_fps: fps,
++          })
++        }
++      />
+ 
+       <div className="p-4 rounded-lg bg-muted/50 border border-border/50">
+         <h4 className="font-medium mb-3 text-sm">Detection</h4>
+@@ -293,6 +350,406 @@ export function FaceSetting() {
+           </Select>
+         </div>
+       </div>
++
++      {/* Advanced / Expert Settings */}
++      <div className="p-4 rounded-lg bg-muted/50 border border-border/50 space-y-3">
++        <button
++          type="button"
++          onClick={() => setAdvancedOpen(!advancedOpen)}
++          className="flex items-center gap-2 w-full text-left font-medium text-sm cursor-pointer"
++        >
++          {advancedOpen ? (
++            <ChevronDown className="w-4 h-4" />
++          ) : (
++            <ChevronRight className="w-4 h-4" />
++          )}
++          Advanced Settings
++        </button>
++
++        {advancedOpen && (
++          <div className="space-y-6 border-t border-border/50 pt-3">
++            {/* Unsharp Mask */}
++            <div className="space-y-3">
++              <h5 className="text-xs font-medium text-muted-foreground">Unsharp Mask</h5>
++              <div className="flex items-center gap-3">
++                <label className="flex items-center gap-2 text-xs cursor-pointer">
++                  <input
++                    type="checkbox"
++                    checked={config.advanced.unsharp_mask.enable}
++                    onChange={(e) =>
++                      setAdvancedField("unsharp_mask", {
++                        ...config.advanced.unsharp_mask,
++                        enable: e.target.checked,
++                      })
++                    }
++                    className="cursor-pointer"
++                  />
++                  Enable sharpening
++                </label>
++              </div>
++              {config.advanced.unsharp_mask.enable && (
++                <div className="grid gap-2 max-w-48">
++                  <div className="flex items-center justify-between">
++                    <Label className="text-xs text-muted-foreground">Amount</Label>
++                    <span className="text-xs font-mono">{config.advanced.unsharp_mask.amount.toFixed(1)}</span>
++                  </div>
++                  <Slider
++                    value={[config.advanced.unsharp_mask.amount]}
++                    min={0}
++                    max={15}
++                    step={0.5}
++                    onValueChange={([v]) =>
++                      setAdvancedField("unsharp_mask", {
++                        ...config.advanced.unsharp_mask,
++                        amount: v,
++                      })
++                    }
++                  />
++                </div>
++              )}
++            </div>
++
++            {/* IR Capture */}
++            <div className="space-y-3">
++              <h5 className="text-xs font-medium text-muted-foreground">IR Capture</h5>
++              <div className="grid grid-cols-3 gap-3">
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Warmup Frames</Label>
++                  <Input
++                    type="number"
++                    min={0}
++                    max={100}
++                    value={config.advanced.ir_capture.warmup_frames}
++                    onChange={(e) =>
++                      setAdvancedField("ir_capture", {
++                        ...config.advanced.ir_capture,
++                        warmup_frames: parseInt(e.target.value, 10) || 0,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Timeout (ms)</Label>
++                  <Input
++                    type="number"
++                    min={0}
++                    max={30000}
++                    step={100}
++                    value={config.advanced.ir_capture.capture_timeout_ms}
++                    onChange={(e) =>
++                      setAdvancedField("ir_capture", {
++                        ...config.advanced.ir_capture,
++                        capture_timeout_ms: parseInt(e.target.value, 10) || 0,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Poll (ms)</Label>
++                  <Input
++                    type="number"
++                    min={1}
++                    max={1000}
++                    value={config.advanced.ir_capture.poll_interval_ms}
++                    onChange={(e) =>
++                      setAdvancedField("ir_capture", {
++                        ...config.advanced.ir_capture,
++                        poll_interval_ms: parseInt(e.target.value, 10) || 33,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Max Attempts</Label>
++                  <Input
++                    type="number"
++                    min={1}
++                    max={10}
++                    value={config.advanced.ir_capture.max_attempts}
++                    onChange={(e) =>
++                      setAdvancedField("ir_capture", {
++                        ...config.advanced.ir_capture,
++                        max_attempts: parseInt(e.target.value, 10) || 1,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">AGC Sleep (ms)</Label>
++                  <Input
++                    type="number"
++                    min={0}
++                    max={10000}
++                    step={100}
++                    value={config.advanced.ir_capture.agc_sleep_ms}
++                    onChange={(e) =>
++                      setAdvancedField("ir_capture", {
++                        ...config.advanced.ir_capture,
++                        agc_sleep_ms: parseInt(e.target.value, 10) || 0,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Cam Warmup (ms)</Label>
++                  <Input
++                    type="number"
++                    min={0}
++                    max={10000}
++                    step={100}
++                    value={config.advanced.ir_capture.camera_warmup_ms}
++                    onChange={(e) =>
++                      setAdvancedField("ir_capture", {
++                        ...config.advanced.ir_capture,
++                        camera_warmup_ms: parseInt(e.target.value, 10) || 0,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++              </div>
++            </div>
++
++            {/* Anti-Spoofing Advanced */}
++            <div className="space-y-3">
++              <h5 className="text-xs font-medium text-muted-foreground">Anti-Spoofing Advanced</h5>
++              <div className="grid grid-cols-3 gap-3">
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Spoof Class Index</Label>
++                  <Input
++                    type="number"
++                    min={0}
++                    max={10}
++                    value={config.advanced.anti_spoofing.spoof_class}
++                    onChange={(e) =>
++                      setAdvancedField("anti_spoofing", {
++                        ...config.advanced.anti_spoofing,
++                        spoof_class: parseInt(e.target.value, 10) || 0,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Combinational Mode</Label>
++                  <Select
++                    value={config.advanced.anti_spoofing.combinational_mode}
++                    onValueChange={(value) =>
++                      setAdvancedField("anti_spoofing", {
++                        ...config.advanced.anti_spoofing,
++                        combinational_mode: value as "all" | "any",
++                      })
++                    }
++                  >
++                    <SelectTrigger className="h-8 text-xs">
++                      <SelectValue />
++                    </SelectTrigger>
++                    <SelectContent>
++                      <SelectItem value="all">All must pass</SelectItem>
++                      <SelectItem value="any">Any must pass</SelectItem>
++                    </SelectContent>
++                  </Select>
++                </div>
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Debug Save Path</Label>
++                  <Input
++                    type="text"
++                    value={config.advanced.anti_spoofing.debug_save_path}
++                    onChange={(e) =>
++                      setAdvancedField("anti_spoofing", {
++                        ...config.advanced.anti_spoofing,
++                        debug_save_path: e.target.value,
++                      })
++                    }
++                    placeholder="(default)"
++                    className="h-8 text-xs"
++                  />
++                </div>
++              </div>
++            </div>
++
++            {/* Detection Advanced */}
++            <div className="space-y-3">
++              <h5 className="text-xs font-medium text-muted-foreground">Detection Advanced</h5>
++              <div className="grid grid-cols-2 gap-3">
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Input Size</Label>
++                  <Input
++                    type="number"
++                    min={160}
++                    max={1920}
++                    step={32}
++                    value={config.advanced.detection.input_size}
++                    onChange={(e) =>
++                      setAdvancedField("detection", {
++                        ...config.advanced.detection,
++                        input_size: parseInt(e.target.value, 10) || 640,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++                <div className="grid gap-1">
++                  <div className="flex items-center justify-between">
++                    <Label className="text-xs text-muted-foreground">NMS IoU</Label>
++                    <span className="text-xs font-mono">{(config.advanced.detection.nms_iou_threshold * 100).toFixed(0)}%</span>
++                  </div>
++                  <div className="h-8 flex items-center">
++                    <Slider
++                      value={[config.advanced.detection.nms_iou_threshold]}
++                      min={0}
++                      max={1}
++                      step={0.01}
++                      onValueChange={([v]) =>
++                        setAdvancedField("detection", {
++                          ...config.advanced.detection,
++                          nms_iou_threshold: v,
++                        })
++                      }
++                    />
++                  </div>
++                </div>
++              </div>
++            </div>
++
++            {/* Capture Resolution */}
++            <div className="space-y-3">
++              <h5 className="text-xs font-medium text-muted-foreground">Capture Resolution</h5>
++              <div className="grid grid-cols-3 gap-3">
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Width</Label>
++                  <Input
++                    type="number"
++                    min={160}
++                    max={3840}
++                    step={16}
++                    value={config.advanced.capture.width}
++                    onChange={(e) =>
++                      setAdvancedField("capture", {
++                        ...config.advanced.capture,
++                        width: parseInt(e.target.value, 10) || 640,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Height</Label>
++                  <Input
++                    type="number"
++                    min={120}
++                    max={2160}
++                    step={16}
++                    value={config.advanced.capture.height}
++                    onChange={(e) =>
++                      setAdvancedField("capture", {
++                        ...config.advanced.capture,
++                        height: parseInt(e.target.value, 10) || 480,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Preview FPS</Label>
++                  <Select
++                    value={String(config.advanced.capture.preview_fps)}
++                    onValueChange={(value) =>
++                      setAdvancedField("capture", {
++                        ...config.advanced.capture,
++                        preview_fps: parseInt(value, 10) || 3,
++                      })
++                    }
++                  >
++                    <SelectTrigger className="h-8 text-xs">
++                      <SelectValue />
++                    </SelectTrigger>
++                    <SelectContent>
++                      <SelectItem value="3">3 FPS</SelectItem>
++                      <SelectItem value="15">15 FPS</SelectItem>
++                      <SelectItem value="30">30 FPS</SelectItem>
++                    </SelectContent>
++                  </Select>
++                </div>
++              </div>
++            </div>
++
++            {/* Enrollment */}
++            <div className="space-y-3">
++              <h5 className="text-xs font-medium text-muted-foreground">Enrollment</h5>
++              <div className="grid grid-cols-1 gap-3 max-w-32">
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Capture Count</Label>
++                  <Input
++                    type="number"
++                    min={1}
++                    max={20}
++                    value={config.advanced.enrollment.capture_count}
++                    onChange={(e) =>
++                      setAdvancedField("enrollment", {
++                        ...config.advanced.enrollment,
++                        capture_count: parseInt(e.target.value, 10) || 1,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++              </div>
++            </div>
++
++            {/* Recognition Advanced */}
++            <div className="space-y-3">
++              <h5 className="text-xs font-medium text-muted-foreground">Recognition Advanced</h5>
++              <div className="grid grid-cols-1 gap-3">
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Gallery Path</Label>
++                  <Input
++                    type="text"
++                    value={config.advanced.recognition.gallery_path}
++                    onChange={(e) =>
++                      setAdvancedField("recognition", {
++                        ...config.advanced.recognition,
++                        gallery_path: e.target.value,
++                      })
++                    }
++                    placeholder="(default data dir)"
++                    className="h-8 text-xs"
++                  />
++                </div>
++              </div>
++            </div>
++
++            {/* Auth */}
++            <div className="space-y-3">
++              <h5 className="text-xs font-medium text-muted-foreground">Auth</h5>
++              <div className="grid grid-cols-1 gap-3 max-w-48">
++                <div className="grid gap-1">
++                  <Label className="text-xs text-muted-foreground">Max Auth Time (ms, 0 = auto)</Label>
++                  <Input
++                    type="number"
++                    min={0}
++                    max={60000}
++                    step={100}
++                    value={config.advanced.auth.max_time_ms}
++                    onChange={(e) =>
++                      setAdvancedField("auth", {
++                        ...config.advanced.auth,
++                        max_time_ms: parseInt(e.target.value, 10) || 0,
++                      })
++                    }
++                    className="h-8 text-xs"
++                  />
++                </div>
++              </div>
++            </div>
++          </div>
++        )}
++      </div>
+     </div>
+   );
+ }

@@ -1,0 +1,29 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0016] Suppress fingerprint D-Bus error when fingerprint disabled
+
+FingerprintSetting mounts unconditionally and calls cmd.fingerprint.listEnrolled() on mount, which tries D-Bus to fprintd and logs errors when no hardware exists.
+Add guard so the call only fires when fingerprint is enabled in config.
+
+diff --git a/app/src/app/configuration/-components/FingerprintSetting.tsx b/app/src/app/configuration/-components/FingerprintSetting.tsx
+index 5b88132..e269e23 100644
+--- a/app/src/app/configuration/-components/FingerprintSetting.tsx
++++ b/app/src/app/configuration/-components/FingerprintSetting.tsx
+@@ -26,6 +26,8 @@ export function FingerprintSetting() {
+   const [username, setUsername] = useState<string>("");
+ 
+   useEffect(() => {
++    if (!config?.enable) return;
++
+     let canceled = false;
+ 
+     const fetchUsername = async () => {
+@@ -68,7 +70,7 @@ export function FingerprintSetting() {
+     return () => {
+       canceled = true;
+     };
+-  }, [setFingerprintConfig]);
++  }, [config?.enable, setFingerprintConfig]);
+ 
+   const fingerOptions = [
+     "left-thumb",

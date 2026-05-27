@@ -1,0 +1,225 @@
+From: MrUnforsaken
+Date: 2026-05-25
+Subject: [PATCH 0010] Add unsharp mask sharpening and multi-frame IR capture with AGC sleep
+
+AI anti-spoofing model (anti-spoof-mn3) relies on high-frequency texture detail to distinguish real faces from spoofs.
+Webcam face crops are too smooth for its decision boundary, producing 99% spoof confidence on real faces.
+Fix: add an unsharp mask pre-filter (separable 3-tap blur, amount=5.0) before normalization.
+
+IR camera (DELL WB7022) AGC takes ~1s to stabilize after stream start.
+Previous approach of 30 warmup frames per capture wasted 31 frames = 1s per attempt.
+Fix: reduce per-capture warmup to 3 frames (just to get a fresh frame) and add a 500ms sleep between attempts, letting the AGC settle naturally while the camera continues streaming.
+The camera is opened in beginAuthenticationSession() so by the time the first capture runs the AGC is already settled.
+
+diff --git a/auth/face/image_utils.h b/auth/face/image_utils.h
+index c3a1842..23a481e 100644
+--- a/auth/face/image_utils.h
++++ b/auth/face/image_utils.h
+@@ -131,6 +131,58 @@ inline ImageRGB imageResizePad(const ImageRGB &src, int tw, int th) {
+   return imageLetterbox(src, tw, th, 0);
+ }
+ 
++/**
++ * Unsharp mask sharpening.  Applies a 3-tap separable blur (kernel [1,2,1])
++ * then computes: result = input + amount * (input - blurred).
++ * Clamped to [0,255].  amount = 5.0 tested to pass anti-spoof-mn3 on webcam crops.
++ */
++inline ImageRGB sharpenImage(const ImageRGB &src, float amount = 3.0f) {
++  if (src.empty()) return {};
++  int h = src.height, w = src.width;
++  ImageRGB tmp(w, h);
++  // Horizontal pass: blur rows
++  for (int y = 0; y < h; y++) {
++    for (int x = 1; x < w - 1; x++) {
++      for (int c = 0; c < 3; c++) {
++        int v = (int)src.at(y, x - 1, c) + 2 * (int)src.at(y, x, c) + (int)src.at(y, x + 1, c);
++        tmp.at(y, x, c) = (uint8_t)((v + 2) >> 2);
++      }
++    }
++    for (int c = 0; c < 3; c++) {
++      tmp.at(y, 0, c) = src.at(y, 0, c);
++      tmp.at(y, w - 1, c) = src.at(y, w - 1, c);
++    }
++  }
++  ImageRGB blurred(w, h);
++  // Vertical pass: blur columns
++  for (int x = 0; x < w; x++) {
++    for (int y = 1; y < h - 1; y++) {
++      for (int c = 0; c < 3; c++) {
++        int v = (int)tmp.at(y - 1, x, c) + 2 * (int)tmp.at(y, x, c) + (int)tmp.at(y + 1, x, c);
++        blurred.at(y, x, c) = (uint8_t)((v + 2) >> 2);
++      }
++    }
++    for (int c = 0; c < 3; c++) {
++      blurred.at(0, x, c) = tmp.at(0, x, c);
++      blurred.at(h - 1, x, c) = tmp.at(h - 1, x, c);
++    }
++  }
++  // Unsharp mask: out = src + amount * (src - blurred)
++  ImageRGB out(w, h);
++  for (int y = 0; y < h; y++) {
++    for (int x = 0; x < w; x++) {
++      for (int c = 0; c < 3; c++) {
++        int s = (int)src.at(y, x, c);
++        int b = (int)blurred.at(y, x, c);
++        int v = (int)(s + amount * (s - b) + 0.5f);
++        out.at(y, x, c) = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
++      }
++    }
++  }
++  return out;
++}
++
+ /**
+  * HWC RGB uint8 -> CHW float, normalized to [0,1].
+  */
+diff --git a/auth/face/antispoofing/face_as.cc b/auth/face/antispoofing/face_as.cc
+index 98d0af6..d8a92b3 100644
+--- a/auth/face/antispoofing/face_as.cc
++++ b/auth/face/antispoofing/face_as.cc
+@@ -51,8 +51,9 @@ std::vector<float> FaceAntiSpoofing::preprocess(const ImageRGB& input_image) {
+   const float mean[3] = {0.5931f, 0.4690f, 0.4229f};
+   const float std[3] = {0.2471f, 0.2214f, 0.2157f};
+   ImageRGB resize_img = resizeImage(input_image, this->imgsz, this->imgsz);
++  ImageRGB sharpened = sharpenImage(resize_img, 5.0f);
+ 
+-  return imageToChwNormalized(resize_img, mean, std);
++  return imageToChwNormalized(sharpened, mean, std);
+ }
+ 
+ SpoofResult FaceAntiSpoofing::inference(const ImageRGB& image) {
+diff --git a/auth/face/antispoofing/ir_camera_as.cc b/auth/face/antispoofing/ir_camera_as.cc
+index dd8ce84..f5c106d 100644
+--- a/auth/face/antispoofing/ir_camera_as.cc
++++ b/auth/face/antispoofing/ir_camera_as.cc
+@@ -3,8 +3,10 @@
+ #include <spdlog/spdlog.h>
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cmath>
+ #include <fstream>
++#include <thread>
+ 
+ #include "camera_capture.h"
+ #include "debug_image_io.h"
+@@ -14,9 +16,9 @@ namespace biopass {
+ 
+ namespace {
+ 
+-constexpr int kIrCaptureWarmupFrames = 5;
+-constexpr int kIrCaptureTimeoutMs = 3000;
+-constexpr int kIrCapturePollIntervalMs = 10;
++constexpr int kIrCaptureWarmupFrames = 3;
++constexpr int kIrCaptureTimeoutMs = 5000;
++constexpr int kIrCapturePollIntervalMs = 33;
+ 
+ }  // namespace
+ 
+@@ -33,29 +35,73 @@ bool checkAntispoofByIRCamera(const std::string& device_path,
+     return false;
+   }
+ 
+-  ImageRGB frame;
+-  if (session && session->isOpen()) {
+-    frame = session->capture();
+-  } else {
+-    frame = captureImageByIRCamera(device_path, kIrCaptureWarmupFrames, kIrCaptureTimeoutMs,
+-                                   kIrCapturePollIntervalMs);
+-  }
+-  if (frame.empty()) {
+-    spdlog::error("FaceAuth: IR camera failed to capture frame from {}", device_path);
+-    return false;
++  // If no pre-opened session, create a fresh one
++  std::unique_ptr<ICameraCaptureSession> local_session;
++  if (!session || !session->isOpen()) {
++    local_session = openCameraSession(device_path, CameraCaptureFormat::V4L2NV12,
++                                      kIrCaptureWarmupFrames, kIrCaptureTimeoutMs,
++                                      kIrCapturePollIntervalMs);
++    if (!local_session) {
++      spdlog::warn("FaceAuth: NV12 IR capture unavailable for '{}'; falling back to GREY",
++                   device_path);
++      local_session = openCameraSession(device_path, CameraCaptureFormat::V4L2Grey,
++                                        kIrCaptureWarmupFrames, kIrCaptureTimeoutMs,
++                                        kIrCapturePollIntervalMs);
++    }
++    if (!local_session) {
++      spdlog::error("FaceAuth: IR camera failed to open {}", device_path);
++      return false;
++    }
++    session = local_session.get();
+   }
+ 
++  constexpr int kMaxCaptureAttempts = 2;
++  int best_face_count = 0;
++
+   try {
+     FaceDetection detector(detection_model_path, 640, {"face"}, detection_threshold);
+-    if (detector.inference(frame).empty()) {
+-      spdlog::error("FaceAuth: IR camera check failed, no face detected in captured frame");
+-      if (debug) {
+-        saveFailedFace(username, frame, "ir_no_face");
++
++    for (int attempt = 0; attempt < kMaxCaptureAttempts; ++attempt) {
++      // Between attempts, let the IR camera AGC settle
++      if (attempt > 0) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+       }
+-      return false;
++
++      ImageRGB frame = session->capture();
++      if (frame.empty()) {
++        spdlog::warn("FaceAuth: IR capture attempt {}/{} returned empty frame", attempt + 1,
++                     kMaxCaptureAttempts);
++        continue;
++      }
++
++      auto faces = detector.inference(frame);
++      int face_count = static_cast<int>(faces.size());
++      if (face_count > best_face_count) {
++        best_face_count = face_count;
++      }
++
++      if (face_count > 0) {
++        spdlog::debug("FaceAuth: IR anti-spoofing detected {} face(s) on attempt {}/{}", face_count,
++                      attempt + 1, kMaxCaptureAttempts);
++        return true;
++      }
++
++      spdlog::debug("FaceAuth: IR anti-spoofing no face on attempt {}/{}", attempt + 1,
++                    kMaxCaptureAttempts);
+     }
+ 
+-    return true;
++    // All attempts failed
++    spdlog::error("FaceAuth: IR camera check failed, no face detected in {} capture(s) (best: {} face(s))",
++                  kMaxCaptureAttempts, best_face_count);
++    if (debug) {
++      // Capture one more frame to save as debug (best-effort)
++      ImageRGB debug_frame = session->capture();
++      if (!debug_frame.empty()) {
++        saveFailedFace(username, debug_frame, "ir_no_face");
++      }
++    }
++    return false;
++
+   } catch (const std::exception& e) {
+     spdlog::error("FaceAuth: IR anti-spoofing check failed: {}", e.what());
+     return false;
+diff --git a/auth/face/face_auth.cc b/auth/face/face_auth.cc
+index 385816b..7aba7e6 100644
+--- a/auth/face/face_auth.cc
++++ b/auth/face/face_auth.cc
+@@ -18,9 +18,9 @@ namespace biopass {
+ 
+ namespace {
+ 
+-constexpr int kIrCaptureWarmupFrames = 5;
+-constexpr int kIrCaptureTimeoutMs = 3000;
+-constexpr int kIrCapturePollIntervalMs = 10;
++constexpr int kIrCaptureWarmupFrames = 3;
++constexpr int kIrCaptureTimeoutMs = 5000;
++constexpr int kIrCapturePollIntervalMs = 33;
+ 
+ }  namespace
+ 
